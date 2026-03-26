@@ -1,10 +1,17 @@
+"""Shared utilities for Video Metadata Crawler.
+
+Contains:
+  - Configuration & logging
+  - Input file parsing
+  - Bilibili ID / URL resolution
+  - Checkpoint manager
+  - Video deduplication
+  - Excel output
+"""
+
 import json
 import logging
 import re
-import os
-import subprocess
-import sys
-import time
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -18,132 +25,9 @@ logger = logging.getLogger(__name__)
 CHECKPOINT_VERSION = 3
 
 
-def _clean_proxy_env(env: dict) -> dict:
-    env = dict(env)
-    for k in ["http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "all_proxy", "ALL_PROXY"]:
-        env[k] = ""
-    return env
-
-
-def ytdlp_iter_json(
-    url: str,
-    cookies_path: str = "",
-    flat: bool = False,
-    sleep_requests: int = 0,
-    no_playlist: bool = False,
-    playlist_items: str = "",
-):
-    """Yield JSON objects from yt-dlp stdout, one JSON per line."""
-    cmd = [
-        sys.executable,
-        "-m",
-        "yt_dlp",
-        "--dump-json",
-        "--no-download",
-        "--ignore-errors",
-        "--extractor-retries",
-        "3",
-        "--proxy",
-        "",
-        "--no-update",
-    ]
-    if flat:
-        cmd.append("--flat-playlist")
-    if no_playlist:
-        cmd.append("--no-playlist")
-    if playlist_items:
-        cmd.extend(["--playlist-items", str(playlist_items)])
-    if cookies_path:
-        cmd.extend(["--cookies", cookies_path])
-    if sleep_requests and sleep_requests > 0:
-        cmd.extend(["--sleep-requests", str(sleep_requests)])
-    cmd.append(url)
-
-    proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        bufsize=1,
-        env=_clean_proxy_env(os.environ),
-    )
-
-    for line in iter(proc.stdout.readline, ""):
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            yield json.loads(line)
-        except json.JSONDecodeError:
-            continue
-
-    proc.wait()
-    if proc.returncode not in (0, None):
-        stderr = proc.stderr.read() if proc.stderr else ""
-        raise RuntimeError(f"yt-dlp failed (code={proc.returncode}): {stderr[:500]}")
-
-
-def ytdlp_flat_urls(url: str, platform: str, cookies_path: str = "", sleep_requests: int = 0):
-    """Return a list of video webpage URLs by using yt-dlp flat playlist mode."""
-    urls = []
-    for info in ytdlp_iter_json(url, cookies_path=cookies_path, flat=True, sleep_requests=sleep_requests):
-        u = info.get("webpage_url") or info.get("url") or ""
-        if not u:
-            continue
-        if not str(u).startswith("http"):
-            if platform == "youtube":
-                u = f"https://www.youtube.com/watch?v={u}"
-            elif platform == "bilibili":
-                if str(u).startswith("BV"):
-                    u = f"https://www.bilibili.com/video/{u}"
-        if str(u).startswith("http"):
-            urls.append(u)
-    return urls
-
-
-def parse_ytdlp_video(info: dict, platform: str, source_name: str, source_type: str):
-    webpage_url = info.get("webpage_url") or info.get("url")
-    if not webpage_url:
-        return None
-
-    publish_time = ""
-    ts = info.get("timestamp")
-    if ts:
-        try:
-            publish_time = datetime.fromtimestamp(int(ts)).strftime("%Y-%m-%d %H:%M:%S")
-        except Exception:
-            publish_time = ""
-    if not publish_time:
-        upload_date = info.get("upload_date", "")
-        if upload_date and len(upload_date) == 8:
-            publish_time = f"{upload_date[:4]}-{upload_date[4:6]}-{upload_date[6:]}"
-
-    categories = info.get("categories") or []
-    category = ", ".join(categories) if isinstance(categories, list) else str(categories or "")
-    if not category:
-        category = info.get("category") or ""
-
-    uploader = info.get("channel") or info.get("uploader") or ""
-
-    row = {
-        "source_name": source_name,
-        "source_type": source_type,
-        "platform": platform,
-        "title": info.get("title", ""),
-        "url": webpage_url,
-        "duration": info.get("duration", 0) or 0,
-        "category": category,
-        "publish_time": publish_time,
-        "view_count": info.get("view_count", 0) or 0,
-        "uploader": uploader,
-    }
-    if platform == "youtube":
-        row["youtube_uploader_id"] = info.get("uploader_id") or ""
-        row["youtube_channel_url"] = info.get("channel_url") or ""
-    return row
-
+# ---------------------------------------------------------------------------
+# Configuration & logging
+# ---------------------------------------------------------------------------
 
 def setup_logging(log_level="INFO"):
     logging.basicConfig(
@@ -180,7 +64,6 @@ def parse_input_file(input_path):
             if "\t" in line:
                 parts = [p.strip() for p in line.split("\t") if p.strip() != ""]
             else:
-                # fallback: split by any whitespace
                 parts = line.split()
             if len(parts) < 3:
                 logger.warning(
@@ -189,7 +72,6 @@ def parse_input_file(input_path):
                     len(parts),
                 )
                 continue
-            # if name contains spaces, treat last two tokens as type/id
             name = " ".join(parts[:-2]).strip()
             type_ = parts[-2].strip()
             id_ = parts[-1].strip()
@@ -202,7 +84,7 @@ def parse_input_file(input_path):
 
 
 # ---------------------------------------------------------------------------
-# ID / URL normalisation
+# Bilibili ID / URL resolution
 # ---------------------------------------------------------------------------
 
 def resolve_bilibili_up_mid(raw_id: str) -> str:
@@ -233,12 +115,15 @@ def resolve_bilibili_series(raw_id: str):
         parts = [p for p in parsed.path.split("/") if p]
         nums = [p for p in parts if p.isdigit()]
         mid = nums[0] if nums else None
-        # space lists: /{mid}/lists/{list_id}
         if "lists" in parts:
             try:
                 idx = parts.index("lists")
                 list_id = parts[idx + 1] if idx + 1 < len(parts) else None
                 if mid and list_id and str(list_id).isdigit():
+                    qs = parse_qs(parsed.query)
+                    url_type = qs.get("type", [None])[0]
+                    if url_type == "season":
+                        return "season", mid, str(list_id)
                     return "list", mid, str(list_id)
             except ValueError:
                 pass
@@ -250,27 +135,6 @@ def resolve_bilibili_series(raw_id: str):
         f"Cannot extract bilibili series/list id from: {raw_id}. "
         f"Use 'mid/season_id' or space list URL '/{mid}/lists/{'{list_id}'}'."
     )
-
-
-def resolve_youtube_channel(raw_id: str) -> str:
-    """Return a full YouTube channel /videos URL."""
-    if raw_id.startswith("http"):
-        url = raw_id.rstrip("/")
-        if not url.endswith("/videos"):
-            url += "/videos"
-        return url
-    if raw_id.startswith("@"):
-        return f"https://www.youtube.com/{raw_id}/videos"
-    if raw_id.startswith("UC"):
-        return f"https://www.youtube.com/channel/{raw_id}/videos"
-    return f"https://www.youtube.com/{raw_id}/videos"
-
-
-def resolve_youtube_playlist(raw_id: str) -> str:
-    """Return a full YouTube playlist URL."""
-    if raw_id.startswith("http"):
-        return raw_id
-    return f"https://www.youtube.com/playlist?list={raw_id}"
 
 
 # ---------------------------------------------------------------------------
@@ -306,7 +170,6 @@ class CheckpointManager:
 
     def is_done(self, entry):
         cp = self.load(entry)
-        # Treat old checkpoints as invalid when schema changes
         if not cp:
             return False
         if cp.get("checkpoint_version") != CHECKPOINT_VERSION:
@@ -338,19 +201,6 @@ def deduplicate_videos(videos):
 # Duration formatting
 # ---------------------------------------------------------------------------
 
-def format_duration(seconds):
-    """Convert seconds to HH:MM:SS or MM:SS string."""
-    try:
-        s = int(seconds)
-    except (TypeError, ValueError):
-        return ""
-    h, rem = divmod(s, 3600)
-    m, sec = divmod(rem, 60)
-    if h > 0:
-        return f"{h}:{m:02d}:{sec:02d}"
-    return f"{m}:{sec:02d}"
-
-
 def format_duration_hms(seconds):
     """Always HH:MM:SS for Excel column 时长(时分秒)."""
     try:
@@ -363,30 +213,8 @@ def format_duration_hms(seconds):
 
 
 def excel_channel_display_name(v: dict) -> str:
-    """B站：uploader；YouTube：优先 @handle + 显示名。"""
-    platform = v.get("platform", "")
-    display = (v.get("uploader") or "").strip()
-    if platform != "youtube":
-        return display
-
-    handle = ""
-    url = (v.get("youtube_channel_url") or "").strip()
-    if url:
-        m = re.search(r"youtube\.com/@([^/?#]+)", url, re.I)
-        if m:
-            handle = "@" + m.group(1)
-    uid = (v.get("youtube_uploader_id") or "").strip()
-    if not handle and uid:
-        if uid.startswith("@"):
-            handle = uid
-        elif uid.startswith("UC") and len(uid) == 24:
-            pass
-        else:
-            handle = "@" + uid.lstrip("@")
-
-    if handle and display and display != handle and display != handle.lstrip("@"):
-        return f"{handle} {display}"
-    return handle or display
+    """B站：uploader；YouTube：直接使用 uploader（已在 crawler 中格式化）。"""
+    return (v.get("uploader") or "").strip()
 
 
 # ---------------------------------------------------------------------------

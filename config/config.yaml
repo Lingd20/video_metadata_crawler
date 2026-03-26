@@ -11,7 +11,7 @@ output:
 
 # Cookies 文件路径（可选，留空或注释掉则不使用）
 cookies:
-  youtube: ""   # e.g. "config/youtube_cookies.txt"
+  youtube: "config/youtube_cookies.txt"   # e.g. "config/youtube_cookies.txt"
   bilibili: "config/bilibili_cookies.txt"  # e.g. "config/bilibili_cookies.txt"
 
 # Bilibili 爬取配置

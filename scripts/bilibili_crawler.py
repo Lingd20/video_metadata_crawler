@@ -8,8 +8,6 @@ Supports:
 import hashlib
 import logging
 import os
-import subprocess
-import sys
 import time
 from datetime import datetime
 from functools import reduce
@@ -273,11 +271,8 @@ class BilibiliCrawler:
         kind, mid, series_id = resolve_bilibili_series(entry["id"])
         source_name = entry["name"]
 
-        # For space lists (/lists/...), prefer yt-dlp which can parse reliably
-        # (and matches user's CLI verification).
         if kind == "list":
-            url = entry["id"] if str(entry["id"]).startswith("http") else f"https://space.bilibili.com/{mid}/lists/{series_id}"
-            return self._crawl_space_list_with_ytdlp(entry, url, cp_mgr, save_interval)
+            return self._crawl_space_list_api(entry, mid, series_id, cp_mgr, save_interval)
 
         cp = cp_mgr.load(entry)
         videos = cp.get("videos", []) if cp else []
@@ -368,141 +363,114 @@ class BilibiliCrawler:
         logger.info("[bilibili_series] %s done — %d videos", source_name, len(videos))
         return videos
 
-    def _crawl_space_list_with_ytdlp(self, entry, url, cp_mgr, save_interval):
+    def _crawl_space_list_api(self, entry, mid, series_id, cp_mgr, save_interval):
+        """爬取 space list（/lists/...）的视频。
+
+        B 站的 /lists/{id} URL 可能对应"系列"或"合集"两种类型，
+        使用的 API 不同。首先尝试系列 API，若第一页返回空则回退到合集 API。
+        """
         source_name = entry["name"]
-        cp = cp_mgr.load(entry)
-        videos = cp.get("videos", []) if cp else []
-        existing_urls = {v.get("url", "") for v in videos if v.get("url")}
-        start_index = len(videos) + 1
+        cp = cp_mgr.load(entry) or {}
+        videos = cp.get("videos", [])
+        start_page = cp.get("next_page", 1)
+        list_kind = cp.get("list_kind", "")
+        existing_urls = {v["url"] for v in videos}
+        new_count = 0
+        page_size = 30
 
         logger.info(
-            "[bilibili_series] %s (kind=list) — url=%s, resuming from index %d (%d cached)",
-            source_name,
-            url,
-            start_index,
-            len(videos),
+            "[bilibili_series] %s (kind=list, mid=%s, id=%s) — resuming page %d, %d cached",
+            source_name, mid, series_id, start_page, len(videos),
         )
 
-        cmd = [
-            sys.executable,
-            "-m",
-            "yt_dlp",
-            "--dump-json",
-            "--no-download",
-            "--ignore-errors",
-            "--extractor-retries",
-            "3",
-            "--proxy",
-            "",
-            "--no-update",
-        ]
-        if self.cookies_path:
-            cmd.extend(["--cookies", self.cookies_path])
-        if start_index > 1:
-            cmd.extend(["--playlist-start", str(start_index)])
-        if self.sleep and self.sleep > 0:
-            cmd.extend(["--sleep-requests", str(self.sleep)])
-        cmd.append(url)
+        # 首次爬取时自动探测类型：先试系列 API，空则试合集 API
+        if not list_kind:
+            list_kind = self._detect_list_kind(mid, series_id)
+            logger.info("  Detected list kind: %s", list_kind)
 
-        new_count = 0
-        try:
-            env = os.environ.copy()
-            for k in [
-                "http_proxy",
-                "https_proxy",
-                "HTTP_PROXY",
-                "HTTPS_PROXY",
-                "all_proxy",
-                "ALL_PROXY",
-            ]:
-                env[k] = ""
-            proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                bufsize=1,
-                env=env,
-            )
-            for line in iter(proc.stdout.readline, ""):
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    info = __import__("json").loads(line)
-                except Exception:
-                    continue
+        page = start_page
+        while True:
+            archives, total = self._fetch_list_page(list_kind, mid, series_id, page, page_size)
 
-                video = self._parse_ytdlp_video(info, source_name)
-                if video is None:
-                    continue
-                if video["url"] in existing_urls:
-                    continue
+            if archives is None:
+                logger.error("Failed page %d — stopping", page)
+                break
 
-                videos.append(video)
-                existing_urls.add(video["url"])
+            if not archives:
+                break
+
+            if page == start_page:
+                logger.info("  Total videos in list: %d", total)
+
+            for v in archives:
+                bvid = v.get("bvid", "") or v.get("bv_id", "")
+                url = f"https://www.bilibili.com/video/{bvid}"
+                if url in existing_urls:
+                    continue
+                dur = v.get("duration", 0)
+                if isinstance(dur, str):
+                    dur = _parse_bilibili_duration(dur)
+                videos.append({
+                    "source_name": source_name,
+                    "source_type": "bilibili_series",
+                    "platform": "bilibili",
+                    "title": v.get("title", ""),
+                    "url": url,
+                    "duration": dur,
+                    "category": _category_name(v.get("typeid")),
+                    "publish_time": (
+                        datetime.fromtimestamp(v["pubdate"]).strftime("%Y-%m-%d %H:%M:%S")
+                        if v.get("pubdate")
+                        else ""
+                    ),
+                    "view_count": _safe_int(v.get("stat", {}).get("view") or v.get("cnt_info", {}).get("play")),
+                    "uploader": source_name,
+                })
+                existing_urls.add(url)
                 new_count += 1
 
-                if new_count % 50 == 0:
-                    logger.info("  Fetched %d new (total %d)", new_count, len(videos))
+            logger.info("  Page %d: +%d (total %d)", page, len(archives), len(videos))
 
-                if new_count >= save_interval:
-                    cp_mgr.save(entry, {"videos": videos, "done": False})
-                    new_count = 0
+            if new_count >= save_interval:
+                cp_mgr.save(entry, {"videos": videos, "next_page": page + 1, "list_kind": list_kind, "done": False})
+                new_count = 0
 
-            proc.wait()
-            if proc.returncode not in (0, None):
-                stderr = proc.stderr.read()
-                if stderr:
-                    logger.warning("yt-dlp stderr: %s", stderr[:500])
-                # Do not mark as done; allow retry after environment/proxy fixes.
-                cp_mgr.save(entry, {"videos": videos, "done": False})
-                logger.warning("[bilibili_series] %s (kind=list) yt-dlp failed — checkpoint kept as not-done", source_name)
-                return videos
-        except KeyboardInterrupt:
-            logger.warning("Interrupted — saving checkpoint")
-            cp_mgr.save(entry, {"videos": videos, "done": False})
-            raise
+            if len(archives) < page_size:
+                break
+            page += 1
+            time.sleep(self.sleep)
 
-        cp_mgr.save(entry, {"videos": videos, "done": True})
-        logger.info("[bilibili_series] %s (kind=list) done — %d videos", source_name, len(videos))
+        cp_mgr.save(entry, {"videos": videos, "next_page": page, "list_kind": list_kind, "done": True})
+        logger.info("[bilibili_series] %s (kind=list/%s) done — %d videos", source_name, list_kind, len(videos))
         return videos
 
-    @staticmethod
-    def _parse_ytdlp_video(info: dict, source_name: str):
-        webpage_url = info.get("webpage_url") or info.get("url")
-        if not webpage_url:
-            return None
+    def _detect_list_kind(self, mid: str, list_id: str) -> str:
+        """探测 /lists/{id} 是系列还是合集：先试系列 API，有数据则为 series，否则为 season。"""
+        data = self._get(
+            "https://api.bilibili.com/x/series/archives",
+            params={"mid": mid, "series_id": list_id, "pn": 1, "ps": 1, "sort": "desc"},
+            sign=False,
+        )
+        if data and data.get("archives"):
+            return "series"
+        return "season"
 
-        # publish time
-        publish_time = ""
-        ts = info.get("timestamp")
-        if ts:
-            try:
-                publish_time = datetime.fromtimestamp(int(ts)).strftime("%Y-%m-%d %H:%M:%S")
-            except Exception:
-                publish_time = ""
-        if not publish_time:
-            upload_date = info.get("upload_date", "")
-            if upload_date and len(upload_date) == 8:
-                publish_time = f"{upload_date[:4]}-{upload_date[4:6]}-{upload_date[6:]}"
-
-        categories = info.get("categories") or []
-        category = ", ".join(categories) if isinstance(categories, list) else str(categories or "")
-        if not category:
-            category = info.get("category") or ""
-
-        return {
-            "source_name": source_name,
-            "source_type": "bilibili_series",
-            "platform": "bilibili",
-            "title": info.get("title", ""),
-            "url": webpage_url,
-            "duration": info.get("duration", 0) or 0,
-            "category": category,
-            "publish_time": publish_time,
-            "view_count": info.get("view_count", 0) or 0,
-            "uploader": info.get("uploader") or info.get("channel") or "",
-        }
+    def _fetch_list_page(self, list_kind: str, mid: str, list_id: str, page: int, page_size: int):
+        """根据类型调用对应 API，返回 (archives, total) 或 (None, 0) 表示失败。"""
+        if list_kind == "series":
+            data = self._get(
+                "https://api.bilibili.com/x/series/archives",
+                params={"mid": mid, "series_id": list_id, "pn": page, "ps": page_size, "sort": "desc"},
+                sign=False,
+            )
+        else:
+            data = self._get(
+                "https://api.bilibili.com/x/polymer/web-space/seasons_archives_list",
+                params={"mid": mid, "season_id": list_id, "page_num": page, "page_size": page_size, "sort_reverse": "false"},
+                sign=False,
+            )
+        if data is None:
+            return None, 0
+        archives = data.get("archives", [])
+        total = data.get("page", {}).get("total", 0)
+        return archives, total

@@ -3,6 +3,9 @@
 
 从 Bilibili / YouTube 爬取指定频道或播放列表的视频元数据，
 保存到 Excel，支持断点续传和自动去重。
+
+- Bilibili: 通过 B 站 API（BilibiliCrawler）
+- YouTube:  通过系统 yt-dlp 命令行（YouTubeCrawler）
 """
 
 import argparse
@@ -12,22 +15,16 @@ import signal
 import sys
 from pathlib import Path
 
+from bilibili_crawler import BilibiliCrawler
+from youtube_crawler import YouTubeCrawler
 from utils import (
     CheckpointManager,
     deduplicate_videos,
-    parse_ytdlp_video,
-    resolve_bilibili_series,
-    resolve_bilibili_up_mid,
-    resolve_youtube_channel,
-    resolve_youtube_playlist,
     load_config,
     parse_input_file,
     save_to_excel,
     setup_logging,
-    ytdlp_flat_urls,
-    ytdlp_iter_json,
 )
-
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +54,7 @@ def main():
     parser.add_argument("--config", default="config/config.yaml", help="配置文件路径")
     parser.add_argument("--input", default="", help="输入文件路径（覆盖配置文件中的 input_file）")
     parser.add_argument("--output", default="", help="输出文件路径（覆盖配置文件中的输出路径）")
+    parser.add_argument("--export-only", action="store_true", help="跳过爬取，仅从 checkpoint 导出 Excel")
     args = parser.parse_args()
 
     project_root = Path(__file__).resolve().parent.parent
@@ -78,13 +76,8 @@ def main():
     cp_mgr = CheckpointManager(cp_dir)
 
     cookies_cfg = config.get("cookies", {})
-    yt_cookies = cookies_cfg.get("youtube", "")
-    bili_cookies = cookies_cfg.get("bilibili", "")
-
-    yc = config.get("youtube", {})
-    youtube_sleep = yc.get("sleep_interval", 3)
-    bc = config.get("bilibili", {})
-    bilibili_sleep = bc.get("sleep_interval", 2)
+    bili_crawler = BilibiliCrawler(config, cookies_path=cookies_cfg.get("bilibili", ""))
+    yt_crawler = YouTubeCrawler(config, cookies_path=cookies_cfg.get("youtube", ""))
 
     out_cfg = config.get("output", {})
     output_dir = Path(args.output).parent if args.output else Path(out_cfg.get("output_dir", "results"))
@@ -93,125 +86,42 @@ def main():
 
     all_videos = []
 
-    for i, entry in enumerate(entries, 1):
-        if _interrupted:
-            logger.info("用户中断，跳过剩余任务")
-            break
-
-        logger.info("=" * 60)
-        logger.info("[%d/%d] %s (%s) id=%s", i, len(entries), entry["name"], entry["type"], entry["id"])
-        logger.info("=" * 60)
-
-        cp = cp_mgr.load(entry) or {}
-        if cp_mgr.is_done(entry):
-            cached = cp.get("videos", [])
-            logger.info("已完成，从缓存加载 %d 条视频", len(cached))
-            all_videos.extend(cached)
-            continue
-
-        source_name = entry["name"]
-        source_type = entry["type"]
-
-        # -----------------------------
-        # Phase A: fetch URL list
-        # -----------------------------
-        urls = cp.get("urls", [])
-        if not cp.get("urls_done", False) or not urls:
-            try:
-                if source_type.startswith("youtube"):
-                    base_url = entry["id"]
-                    platform = "youtube"
-                    if source_type == "youtube_channel":
-                        base_url = resolve_youtube_channel(entry["id"])
-                    else:
-                        base_url = resolve_youtube_playlist(entry["id"])
-                    urls = ytdlp_flat_urls(base_url, platform=platform, cookies_path=yt_cookies, sleep_requests=youtube_sleep)
-                else:
-                    platform = "bilibili"
-                    if source_type == "bilibili_up":
-                        mid = resolve_bilibili_up_mid(entry["id"])
-                        base_url = f"https://space.bilibili.com/{mid}/upload/video"
-                        urls = ytdlp_flat_urls(base_url, platform=platform, cookies_path=bili_cookies, sleep_requests=bilibili_sleep)
-                    else:
-                        kind, mid, sid = resolve_bilibili_series(entry["id"])
-                        if kind == "list":
-                            base_url = entry["id"] if str(entry["id"]).startswith("http") else f"https://space.bilibili.com/{mid}/lists/{sid}"
-                        else:
-                            base_url = f"https://space.bilibili.com/{mid}/channel/collectiondetail?sid={sid}"
-                        urls = ytdlp_flat_urls(base_url, platform=platform, cookies_path=bili_cookies, sleep_requests=bilibili_sleep)
-
-                urls = list(dict.fromkeys(urls))  # keep order, dedupe
-                cp_mgr.save(entry, {**cp, "urls": urls, "urls_done": True, "done": False})
-                logger.info("URL清单获取完成：%d 条", len(urls))
-            except Exception:
-                logger.exception("获取URL清单失败：%s", source_name)
-                cp_mgr.save(entry, {**cp, "urls": urls, "urls_done": False, "done": False})
-                continue
-        else:
-            logger.info("URL清单已存在：%d 条", len(urls))
-
-        # -----------------------------
-        # Phase B: fetch metadata
-        # -----------------------------
-        videos = cp.get("videos", [])
-        existing_urls = {v.get("url") for v in videos if v.get("url")}
-        remaining = [u for u in urls if u not in existing_urls]
-
-        if not remaining:
-            cp_mgr.save(entry, {**cp, "urls": urls, "urls_done": True, "videos": videos, "done": True})
-            all_videos.extend(videos)
-            logger.info("metadata 已齐全：%d 条", len(videos))
-            continue
-
-        logger.info("开始拉取 metadata：剩余 %d / %d", len(remaining), len(urls))
-
-        cookies_path = yt_cookies if source_type.startswith("youtube") else bili_cookies
-        sleep_requests = youtube_sleep if source_type.startswith("youtube") else bilibili_sleep
-        platform = "youtube" if source_type.startswith("youtube") else "bilibili"
-
-        new_count = 0
-        try:
-            for u in remaining:
-                if _interrupted:
-                    break
-                # B站存在“一个BV包含很多子分P/分集”的情况，yt-dlp 可能会把单视频当成 playlist 展开，导致卡住。
-                # 这里强制按“单视频”取 metadata，避免展开子条目。
-                no_playlist = platform == "bilibili"
-                playlist_items = "1" if platform == "bilibili" else ""
-                for info in ytdlp_iter_json(
-                    u,
-                    cookies_path=cookies_path,
-                    flat=False,
-                    sleep_requests=sleep_requests,
-                    no_playlist=no_playlist,
-                    playlist_items=playlist_items,
-                ):
-                    v = parse_ytdlp_video(info, platform=platform, source_name=source_name, source_type=source_type)
-                    if not v or not v.get("url") or v["url"] in existing_urls:
-                        continue
-                    videos.append(v)
-                    existing_urls.add(v["url"])
-                    new_count += 1
-                    if new_count >= save_interval:
-                        cp_mgr.save(entry, {**cp, "urls": urls, "urls_done": True, "videos": videos, "done": False})
-                        new_count = 0
+    if args.export_only:
+        logger.info("导出模式：跳过爬取，从 checkpoint 加载数据")
+        for i, entry in enumerate(entries, 1):
+            cached = cp_mgr.get_videos(entry)
+            if cached:
+                logger.info("[%d/%d] %s — 加载 %d 条视频", i, len(entries), entry["name"], len(cached))
+                all_videos.extend(cached)
+            else:
+                logger.warning("[%d/%d] %s — 无 checkpoint 数据", i, len(entries), entry["name"])
+    else:
+        for i, entry in enumerate(entries, 1):
             if _interrupted:
-                cp_mgr.save(entry, {**cp, "urls": urls, "urls_done": True, "videos": videos, "done": False})
+                logger.info("用户中断，跳过剩余任务")
+                break
+
+            logger.info("=" * 60)
+            logger.info("[%d/%d] %s (%s) id=%s", i, len(entries), entry["name"], entry["type"], entry["id"])
+            logger.info("=" * 60)
+
+            if cp_mgr.is_done(entry):
+                cached = cp_mgr.get_videos(entry)
+                logger.info("已完成，从缓存加载 %d 条视频", len(cached))
+                all_videos.extend(cached)
+                continue
+
+            crawler = bili_crawler if entry["type"].startswith("bilibili") else yt_crawler
+
+            try:
+                videos = crawler.crawl(entry, cp_mgr, save_interval)
+                all_videos.extend(videos)
+                logger.info("完成：%d 条视频", len(videos))
+            except KeyboardInterrupt:
                 logger.warning("中断，已保存 checkpoint")
                 break
-        except KeyboardInterrupt:
-            cp_mgr.save(entry, {**cp, "urls": urls, "urls_done": True, "videos": videos, "done": False})
-            logger.warning("中断，已保存 checkpoint")
-            break
-        except Exception:
-            logger.exception("拉取 metadata 失败：%s", source_name)
-            cp_mgr.save(entry, {**cp, "urls": urls, "urls_done": True, "videos": videos, "done": False})
-            continue
-
-        prev_count = len(cp.get("videos", [])) if isinstance(cp.get("videos", []), list) else 0
-        cp_mgr.save(entry, {**cp, "urls": urls, "urls_done": True, "videos": videos, "done": True})
-        logger.info("完成：新增 %d 条，累计 %d 条", len(videos) - prev_count, len(videos))
-        all_videos.extend(videos)
+            except Exception:
+                logger.exception("爬取失败：%s", entry["name"])
 
     all_videos = deduplicate_videos(all_videos)
     save_to_excel(all_videos, str(output_file))
