@@ -1,0 +1,22 @@
+# 视频元数据爬取输入文件
+# 每行格式：name<TAB>type<TAB>id
+# 以 # 开头的行为注释，空行自动跳过
+#
+# type 取值：
+#   bilibili_up       — B站UP主（爬取其所有投稿视频）
+#   bilibili_series   — B站合集/系列
+#   youtube_channel   — YouTube 频道
+#   youtube_playlist  — YouTube 播放列表
+#
+# id 支持直接填写 ID 或完整 URL：
+#   bilibili_up      : UP主 mid（数字），如 39627524 或 https://space.bilibili.com/39627524
+#   bilibili_series  : 格式为 mid/season_id，如 39627524/1234567
+#                      或合集页面 URL，如 https://space.bilibili.com/39627524/channel/collectiondetail?sid=1234567
+#   youtube_channel  : 频道 ID（UCxxx）、@handle、或频道 URL
+#   youtube_playlist : 播放列表 ID（PLxxx）或播放列表 URL
+#
+# ===== 示例（取消注释后可直接使用）=====
+#老番茄	bilibili_up	39627524
+#某合集名	bilibili_series	39627524/1234567
+#3Blue1Brown	youtube_channel	UCYO_jab_esuFRV4b17AJtAw
+#CS50 Lectures	youtube_playlist	PLhQjrBD2T381WAHyx1pq-sBfykqMBI7V4

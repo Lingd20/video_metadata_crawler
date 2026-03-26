@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+*.pyo
+.env
+
+# 运行产物
+results/
+checkpoints/
+
+# Cookies（含敏感信息）
+config/*_cookies.txt
+config/cookies.txt
+
+# IDE
+.vscode/
+.idea/

@@ -1,0 +1,32 @@
+# Video Metadata Crawler 配置文件
+# 从 Bilibili / YouTube 爬取指定频道或播放列表的视频元数据
+
+# 输入文件路径（TSV 格式，每行: name\ttype\tid）
+input_file: "input/input_yue.txt"
+
+# 输出配置
+output:
+  output_dir: "results"
+  filename: "video_metadata.xlsx"
+
+# Cookies 文件路径（可选，留空或注释掉则不使用）
+cookies:
+  youtube: ""   # e.g. "config/youtube_cookies.txt"
+  bilibili: "config/bilibili_cookies.txt"  # e.g. "config/bilibili_cookies.txt"
+
+# Bilibili 爬取配置
+bilibili:
+  page_size: 50              # 每页数量（最大50）
+  sleep_interval: 2          # 请求间隔（秒）
+  error_sleep_interval: 30   # 错误后等待时间（秒）
+  max_retries: 3             # 最大重试次数
+
+# YouTube 爬取配置
+youtube:
+  sleep_interval: 3          # 请求间隔（秒）
+  error_sleep_interval: 60   # 错误后等待时间（秒）
+
+# 断点续传配置
+checkpoint:
+  checkpoint_dir: "checkpoints"
+  save_interval: 50          # 每获取 N 个新视频保存一次 checkpoint

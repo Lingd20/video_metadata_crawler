@@ -1,0 +1,4 @@
+yt-dlp>=2023.11.16
+requests>=2.28.0
+openpyxl>=3.1.0
+PyYAML>=6.0
