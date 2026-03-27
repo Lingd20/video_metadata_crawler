@@ -9,9 +9,9 @@ Supports:
 
 import json
 import logging
-import os
 import re
 import subprocess
+import threading
 from datetime import datetime
 
 from utils import CheckpointManager
@@ -44,6 +44,14 @@ class YouTubeCrawler:
         yc = config.get("youtube", {})
         self.sleep = yc.get("sleep_interval", 3)
         self.cookies_path = cookies_path
+        cutoff = yc.get("cutoff_date", "")
+        self.cutoff_dt: datetime | None = None
+        if cutoff:
+            try:
+                self.cutoff_dt = datetime.strptime(str(cutoff), "%Y-%m-%d")
+                logger.info("YouTube cutoff date: %s", self.cutoff_dt.strftime("%Y-%m-%d"))
+            except ValueError:
+                logger.warning("Invalid cutoff_date '%s', ignored (expected YYYY-MM-DD)", cutoff)
 
     def crawl(self, entry: dict, cp_mgr: CheckpointManager, save_interval: int = 50):
         """爬取一个 youtube_channel 或 youtube_playlist，返回视频字典列表。"""
@@ -76,15 +84,23 @@ class YouTubeCrawler:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                encoding="utf-8",
-                errors="replace",
                 bufsize=1,
             )
 
-            for line in iter(proc.stdout.readline, ""):
-                line = line.strip()
-                if not line:
+            stderr_lines: list[str] = []
+
+            def _read_stderr():
+                if proc.stderr:
+                    for line in proc.stderr:
+                        stderr_lines.append(line)
+
+            stderr_thread = threading.Thread(target=_read_stderr, daemon=True)
+            stderr_thread.start()
+
+            for line in proc.stdout:
+                if not line.strip():
                     continue
+
                 try:
                     info = json.loads(line)
                 except json.JSONDecodeError:
@@ -107,11 +123,27 @@ class YouTubeCrawler:
                     cp_mgr.save(entry, {"videos": videos, "done": False})
                     new_count = 0
 
+                if self.cutoff_dt and video.get("publish_time"):
+                    try:
+                        pt = datetime.strptime(video["publish_time"][:10], "%Y-%m-%d")
+                        if pt < self.cutoff_dt:
+                            logger.info(
+                                "Reached cutoff date %s (video: %s), stopping",
+                                self.cutoff_dt.strftime("%Y-%m-%d"),
+                                video["publish_time"][:10],
+                            )
+                            proc.terminate()
+                            break
+                    except ValueError:
+                        pass
+
             proc.wait()
-            if proc.returncode not in (0, None):
-                stderr = proc.stderr.read() if proc.stderr else ""
-                if stderr:
-                    logger.warning("yt-dlp stderr: %s", stderr[:500])
+            stderr_thread.join(timeout=5)
+
+            if proc.returncode != 0:
+                stderr_output = "".join(stderr_lines)
+                if stderr_output:
+                    logger.warning("yt-dlp stderr: %s", stderr_output[:500])
                 cp_mgr.save(entry, {"videos": videos, "done": False})
                 logger.warning("[%s] %s — yt-dlp non-zero exit, checkpoint kept as not-done", etype, source_name)
                 return videos
@@ -128,21 +160,19 @@ class YouTubeCrawler:
     def _build_cmd(self, url: str, start_index: int = 1) -> list[str]:
         cmd = [
             "yt-dlp",
-            "--dump-json",
-            "--no-download",
+            "--match-filter", "availability = public",
+            "-j",
+            "-I", f"{start_index}:",
             "--ignore-errors",
-            "--extractor-retries", "3",
-            "--no-update",
             "--js-runtimes", "node",
-            "--no-cache-dir",
             "--remote-components", "ejs:github",
+            "--extractor-args", "youtube:player_client=android",
+            "--extractor-args", "youtube:skip=live,members_only",
         ]
         if self.cookies_path:
             cmd.extend(["--cookies", self.cookies_path])
-        if start_index > 1:
-            cmd.extend(["--playlist-start", str(start_index)])
         if self.sleep and self.sleep > 0:
-            cmd.extend(["--sleep-requests", str(self.sleep)])
+            cmd.extend(["--sleep-interval", str(self.sleep)])
         cmd.append(url)
         return cmd
 
@@ -184,10 +214,7 @@ class YouTubeCrawler:
             elif not (uploader_id.startswith("UC") and len(uploader_id) == 24):
                 handle = "@" + uploader_id.lstrip("@")
 
-        if handle and uploader and uploader != handle and uploader != handle.lstrip("@"):
-            display_name = f"{handle} {uploader}"
-        else:
-            display_name = handle or uploader
+        display_name = handle or uploader
 
         return {
             "source_name": source_name,

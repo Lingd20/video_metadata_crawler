@@ -13,8 +13,8 @@ log() {
 }
 
 config="$PROJECT_ROOT/config/config.yaml"
-input_file=""
-output_file=""
+input_file="$PROJECT_ROOT/input/input_ae.txt"
+output_file="$PROJECT_ROOT/results/ae_metadata.xlsx"
 export_only=""
 
 while [ $# -gt 0 ]; do

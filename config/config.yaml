@@ -23,8 +23,9 @@ bilibili:
 
 # YouTube 爬取配置
 youtube:
-  sleep_interval: 3          # 请求间隔（秒）
-  error_sleep_interval: 60   # 错误后等待时间（秒）
+  sleep_interval: 10          # 请求间隔（秒）
+  error_sleep_interval: 10   # 错误后等待时间（秒）
+  cutoff_date: "2025/6/30"             # 截止日期（YYYY-MM-DD），早于此日期的视频将停止爬取；留空则不限制
 
 # 断点续传配置
 checkpoint:

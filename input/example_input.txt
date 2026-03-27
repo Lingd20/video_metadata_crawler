@@ -2,21 +2,43 @@
 # 每行格式：name<TAB>type<TAB>id
 # 以 # 开头的行为注释，空行自动跳过
 #
-# type 取值：
+# ─── type 取值 ───
 #   bilibili_up       — B站UP主（爬取其所有投稿视频）
-#   bilibili_series   — B站合集/系列
+#   bilibili_series   — B站合集/系列（seasons 或 lists）
 #   youtube_channel   — YouTube 频道
 #   youtube_playlist  — YouTube 播放列表
 #
-# id 支持直接填写 ID 或完整 URL：
-#   bilibili_up      : UP主 mid（数字），如 39627524 或 https://space.bilibili.com/39627524
-#   bilibili_series  : 格式为 mid/season_id，如 39627524/1234567
-#                      或合集页面 URL，如 https://space.bilibili.com/39627524/channel/collectiondetail?sid=1234567
-#   youtube_channel  : 频道 ID（UCxxx）、@handle、或频道 URL
-#   youtube_playlist : 播放列表 ID（PLxxx）或播放列表 URL
+# ─── id 支持格式 ───
+#
+#   bilibili_up:
+#     纯数字 mid           39627524
+#     空间主页 URL          https://space.bilibili.com/39627524/upload/video
+#
+#   bilibili_series:
+#     mid/season_id         39627524/1234567
+#     lists URL (season)    https://space.bilibili.com/95515699/lists/279423?type=season
+#     lists URL (list)      https://space.bilibili.com/95515699/lists/2077736
+#     collectiondetail URL  https://space.bilibili.com/39627524/channel/collectiondetail?sid=1234567
+#
+#   youtube_channel:
+#     @handle               @3blue1brown
+#     频道 ID (UC...)       UCYO_jab_esuFRV4b17AJtAw
+#     频道 URL              https://www.youtube.com/@3blue1brown
+#
+#   youtube_playlist:
+#     播放列表 ID (PL...)   PLhQjrBD2T381WAHyx1pq-sBfykqMBI7V4
+#     播放列表 URL          https://www.youtube.com/playlist?list=PLhQjrBD2T381WAHyx1pq-sBfykqMBI7V4
 #
 # ===== 示例（取消注释后可直接使用）=====
-#老番茄	bilibili_up	39627524
-#某合集名	bilibili_series	39627524/1234567
-#3Blue1Brown	youtube_channel	UCYO_jab_esuFRV4b17AJtAw
+#
+# --- Bilibili ---
+#老番茄	bilibili_up	https://space.bilibili.com/39627524/upload/video
+#郭嘉峰粤语课堂	bilibili_series	https://space.bilibili.com/95515699/lists/279423?type=season
+#高玩频道	bilibili_series	https://space.bilibili.com/95515699/lists/2077736
+#某合集	bilibili_series	39627524/1234567
+#
+# --- YouTube ---
+#3Blue1Brown	youtube_channel	@3blue1brown
+#Veritasium	youtube_channel	https://www.youtube.com/@veritasium
 #CS50 Lectures	youtube_playlist	PLhQjrBD2T381WAHyx1pq-sBfykqMBI7V4
+#Cantonese Lessons	youtube_playlist	https://www.youtube.com/playlist?list=PL66DE2609BD06AC0D
