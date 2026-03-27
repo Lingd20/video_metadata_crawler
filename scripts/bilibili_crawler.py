@@ -255,6 +255,16 @@ class BilibiliCrawler:
         self._img_key = None
         self._sub_key = None
         self._wbi_ts = 0
+        self._mid_name_cache: dict[str, str] = {}
+
+        cutoff = bc.get("cutoff_date", "")
+        self.cutoff_dt: datetime | None = None
+        if cutoff:
+            try:
+                self.cutoff_dt = datetime.strptime(str(cutoff), "%Y-%m-%d")
+                logger.info("Bilibili cutoff date: %s", self.cutoff_dt.strftime("%Y-%m-%d"))
+            except ValueError:
+                logger.warning("Invalid cutoff_date '%s', ignored (expected YYYY-MM-DD)", cutoff)
 
     # -- cookies --
 
@@ -366,7 +376,15 @@ class BilibiliCrawler:
             if not vlist:
                 break
 
+            cutoff_reached = False
             for v in vlist:
+                if self.cutoff_dt and v.get("created"):
+                    pt = datetime.fromtimestamp(v["created"])
+                    if pt < self.cutoff_dt:
+                        logger.info("Reached cutoff date %s (video: %s), stopping",
+                                    self.cutoff_dt.strftime("%Y-%m-%d"), pt.strftime("%Y-%m-%d"))
+                        cutoff_reached = True
+                        break
                 bvid = v.get("bvid", "")
                 url = f"https://www.bilibili.com/video/{bvid}"
                 if url in existing_urls:
@@ -393,7 +411,7 @@ class BilibiliCrawler:
                 cp_mgr.save(entry, {"videos": videos, "next_page": page + 1, "done": False})
                 new_count = 0
 
-            if len(vlist) < self.page_size:
+            if cutoff_reached or len(vlist) < self.page_size:
                 break
             page += 1
             time.sleep(self.sleep)
@@ -401,6 +419,27 @@ class BilibiliCrawler:
         cp_mgr.save(entry, {"videos": videos, "next_page": page, "done": True})
         logger.info("[bilibili_up] %s done — %d videos", source_name, len(videos))
         return videos
+
+    def _get_uploader_name(self, mid: str) -> str:
+        """通过 mid 获取 UP 主昵称，带缓存。"""
+        mid = str(mid)
+        if mid in self._mid_name_cache:
+            return self._mid_name_cache[mid]
+        data = self._get(
+            "https://api.bilibili.com/x/space/wbi/acc/info",
+            params={"mid": mid},
+            sign=True,
+        )
+        name = data.get("name", "") if data else ""
+        self._mid_name_cache[mid] = name
+        return name
+
+    def _resolve_uploader(self, video_item: dict, mid: str) -> str:
+        """优先用 API 返回的 author 字段，否则根据 mid 查询。"""
+        author = video_item.get("author", "")
+        if author:
+            return author
+        return self._get_uploader_name(mid)
 
     # -- 合集 / 系列 --
 
@@ -458,7 +497,15 @@ class BilibiliCrawler:
             if page == start_page:
                 logger.info("  Total videos in series: %d", total)
 
+            cutoff_reached = False
             for v in archives:
+                if self.cutoff_dt and v.get("pubdate"):
+                    pt = datetime.fromtimestamp(v["pubdate"])
+                    if pt < self.cutoff_dt:
+                        logger.info("Reached cutoff date %s (video: %s), stopping",
+                                    self.cutoff_dt.strftime("%Y-%m-%d"), pt.strftime("%Y-%m-%d"))
+                        cutoff_reached = True
+                        break
                 bvid = v.get("bvid", "") or v.get("bv_id", "")
                 url = f"https://www.bilibili.com/video/{bvid}"
                 if url in existing_urls:
@@ -480,7 +527,7 @@ class BilibiliCrawler:
                         else ""
                     ),
                     "view_count": _safe_int(v.get("stat", {}).get("view") or v.get("cnt_info", {}).get("play")),
-                    "uploader": source_name,
+                    "uploader": self._resolve_uploader(v, mid),
                 })
                 existing_urls.add(url)
                 new_count += 1
@@ -491,7 +538,7 @@ class BilibiliCrawler:
                 cp_mgr.save(entry, {"videos": videos, "next_page": page + 1, "done": False})
                 new_count = 0
 
-            if len(archives) < page_size:
+            if cutoff_reached or len(archives) < page_size:
                 break
             page += 1
             time.sleep(self.sleep)
@@ -539,7 +586,15 @@ class BilibiliCrawler:
             if page == start_page:
                 logger.info("  Total videos in list: %d", total)
 
+            cutoff_reached = False
             for v in archives:
+                if self.cutoff_dt and v.get("pubdate"):
+                    pt = datetime.fromtimestamp(v["pubdate"])
+                    if pt < self.cutoff_dt:
+                        logger.info("Reached cutoff date %s (video: %s), stopping",
+                                    self.cutoff_dt.strftime("%Y-%m-%d"), pt.strftime("%Y-%m-%d"))
+                        cutoff_reached = True
+                        break
                 bvid = v.get("bvid", "") or v.get("bv_id", "")
                 url = f"https://www.bilibili.com/video/{bvid}"
                 if url in existing_urls:
@@ -561,7 +616,7 @@ class BilibiliCrawler:
                         else ""
                     ),
                     "view_count": _safe_int(v.get("stat", {}).get("view") or v.get("cnt_info", {}).get("play")),
-                    "uploader": source_name,
+                    "uploader": self._resolve_uploader(v, mid),
                 })
                 existing_urls.add(url)
                 new_count += 1
@@ -572,7 +627,7 @@ class BilibiliCrawler:
                 cp_mgr.save(entry, {"videos": videos, "next_page": page + 1, "list_kind": list_kind, "done": False})
                 new_count = 0
 
-            if len(archives) < page_size:
+            if cutoff_reached or len(archives) < page_size:
                 break
             page += 1
             time.sleep(self.sleep)

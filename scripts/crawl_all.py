@@ -71,9 +71,12 @@ def main():
         logger.error("No valid entries in %s", input_file)
         return
 
-    cp_dir = config.get("checkpoint", {}).get("checkpoint_dir", "checkpoints")
+    cp_base = config.get("checkpoint", {}).get("checkpoint_dir", "checkpoints")
     save_interval = config.get("checkpoint", {}).get("save_interval", 50)
+    input_stem = Path(input_file).stem
+    cp_dir = str(Path(cp_base) / input_stem)
     cp_mgr = CheckpointManager(cp_dir)
+    logger.info("Checkpoint 目录: %s", cp_dir)
 
     cookies_cfg = config.get("cookies", {})
     bili_crawler = BilibiliCrawler(config, cookies_path=cookies_cfg.get("bilibili", ""))

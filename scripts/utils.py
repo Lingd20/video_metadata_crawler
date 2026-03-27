@@ -227,10 +227,10 @@ HEADERS = [
     "时长(时分秒)",
     "时长(小时)",
     "主题",
+    "标题",
     "来源名称",
     "来源类型",
     "平台",
-    "分类",
     "发布时间",
     "播放量",
 ]
@@ -238,6 +238,7 @@ HEADERS = [
 _HEADER_FONT = Font(bold=True, color="FFFFFF", size=11)
 _HEADER_FILL = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
 _HEADER_ALIGN = Alignment(horizontal="center", vertical="center")
+_CENTER_ALIGN = Alignment(horizontal="center", vertical="center")
 
 
 def save_to_excel(videos, output_path):
@@ -254,12 +255,6 @@ def save_to_excel(videos, output_path):
 
     for row, v in enumerate(videos, 2):
         source_name = v.get("source_name", "")
-        source_type = v.get("source_type", "")
-        uploader = v.get("uploader", "")
-        if source_type == "bilibili_series" and source_name and uploader:
-            suffix = f"_{uploader}"
-            if not str(source_name).endswith(suffix):
-                source_name = f"{source_name}{suffix}"
 
         duration_sec = v.get("duration", "")
         try:
@@ -267,19 +262,24 @@ def save_to_excel(videos, output_path):
         except (TypeError, ValueError):
             hours = ""
 
-        ws.cell(row=row, column=1, value=v.get("url", ""))
-        ws.cell(row=row, column=2, value=excel_channel_display_name(v))
-        ws.cell(row=row, column=3, value=format_duration_hms(duration_sec))
-        ws.cell(row=row, column=4, value=hours)
-        ws.cell(row=row, column=5, value=v.get("title", ""))
-        ws.cell(row=row, column=6, value=source_name)
-        ws.cell(row=row, column=7, value=source_type)
-        ws.cell(row=row, column=8, value=v.get("platform", ""))
-        ws.cell(row=row, column=9, value=v.get("category", ""))
-        ws.cell(row=row, column=10, value=v.get("publish_time", ""))
-        ws.cell(row=row, column=11, value=v.get("view_count", ""))
+        row_data = [
+            v.get("url", ""),
+            excel_channel_display_name(v),
+            format_duration_hms(duration_sec),
+            hours,
+            v.get("category", ""),
+            v.get("title", ""),
+            source_name,
+            v.get("source_type", ""),
+            v.get("platform", ""),
+            v.get("publish_time", ""),
+            v.get("view_count", ""),
+        ]
+        for col, val in enumerate(row_data, 1):
+            cell = ws.cell(row=row, column=col, value=val)
+            cell.alignment = _CENTER_ALIGN
 
-    preferred_widths = [50, 28, 14, 12, 40, 18, 16, 8, 14, 20, 12]
+    preferred_widths = [60, 28, 15, 15, 35, 75, 50, 30, 15, 30, 12]
     for i, w in enumerate(preferred_widths, 1):
         ws.column_dimensions[openpyxl.utils.get_column_letter(i)].width = w
 

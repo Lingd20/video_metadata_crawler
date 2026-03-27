@@ -39,6 +39,6 @@ FoLiSC会议录影	bilibili_series	https://space.bilibili.com/410568594/lists/58
 粤语日日讲	bilibili_up	https://space.bilibili.com/1740946491/upload/video
 共時「比較」	bilibili_series	https://space.bilibili.com/410568594/lists/73232?type=season
 各种挑战	bilibili_series	https://space.bilibili.com/274412048/lists/229894?type=season
-Learn Cantonese - Learn with Video	youtube_playlist	https://www.youtube.com/playlist?list=PL66DE2609BD06AC0D
-Learn Cantonese with Video and Pictures	youtube_playlist	https://www.youtube.com/playlist?list=PL743EE265854E9969
-Learn Cantonese - Learn Cantonese Vocabulary with Pictures	youtube_playlist	https://www.youtube.com/playlist?list=PL829A6559379CC30A
+#Learn Cantonese - Learn with Video	youtube_playlist	https://www.youtube.com/playlist?list=PL66DE2609BD06AC0D
+#Learn Cantonese with Video and Pictures	youtube_playlist	https://www.youtube.com/playlist?list=PL743EE265854E9969
+#Learn Cantonese - Learn Cantonese Vocabulary with Pictures	youtube_playlist	https://www.youtube.com/playlist?list=PL829A6559379CC30A
