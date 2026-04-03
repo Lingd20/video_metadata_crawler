@@ -6,6 +6,7 @@ __pycache__/
 # 运行产物
 results/
 checkpoints/
+downloads/
 
 # Cookies（含敏感信息）
 config/*_cookies.txt

@@ -1,3 +1,11 @@
 @QalbyEtmaan    纪录片
 @ABtalks    访谈
 @AlArabiya  新闻
+@noorstars  单人，近期可用视频较少，全部加入有标数据集
+@spacetoonyoutube   动画（在multi-asr-bench中使用过，仅在无标数据中可用）
+@MustafaGO  游戏
+@hdeel  近期视频不多，在有标数据集几乎没有使用
+@bessanismail   歌曲和vlog，注意过滤歌曲
+@ghaithmarwan   vlog
+@majd_alzakout
+@bs_arabic  疑似ai配音

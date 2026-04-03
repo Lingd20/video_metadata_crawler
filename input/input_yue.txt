@@ -39,6 +39,15 @@ FoLiSC会议录影	bilibili_series	https://space.bilibili.com/410568594/lists/58
 粤语日日讲	bilibili_up	https://space.bilibili.com/1740946491/upload/video
 共時「比較」	bilibili_series	https://space.bilibili.com/410568594/lists/73232?type=season
 各种挑战	bilibili_series	https://space.bilibili.com/274412048/lists/229894?type=season
-#Learn Cantonese - Learn with Video	youtube_playlist	https://www.youtube.com/playlist?list=PL66DE2609BD06AC0D
-#Learn Cantonese with Video and Pictures	youtube_playlist	https://www.youtube.com/playlist?list=PL743EE265854E9969
-#Learn Cantonese - Learn Cantonese Vocabulary with Pictures	youtube_playlist	https://www.youtube.com/playlist?list=PL829A6559379CC30A
+Learn Cantonese - Learn with Video	youtube_playlist	https://www.youtube.com/playlist?list=PL66DE2609BD06AC0D
+Learn Cantonese with Video and Pictures	youtube_playlist	https://www.youtube.com/playlist?list=PL743EE265854E9969
+Learn Cantonese - Learn Cantonese Vocabulary with Pictures	youtube_playlist	https://www.youtube.com/playlist?list=PL829A6559379CC30A
+外国人讲粤语	bilibili_series	https://space.bilibili.com/447420410/lists/4589737?type=season
+港星语录	bilibili_series	https://space.bilibili.com/447420410/lists/2920575?type=season
+粤港澳问答比赛	bilibili_series	https://space.bilibili.com/447420410/lists/5398779?type=season
+煲剧学粤语	bilibili_series	https://space.bilibili.com/447420410/lists/1930255?type=season
+粤读古诗词	bilibili_series	https://space.bilibili.com/447420410/lists/1930266?type=season
+狐宝居居	bilibili_up https://space.bilibili.com/3493297437805491/upload/video
+一個臨記	bilibili_up	https://space.bilibili.com/38588615/upload/video
+我就翻一下	bilibili_up	https://space.bilibili.com/1236558653/upload/video
+亿只老麦	bilibili_up	https://space.bilibili.com/276453717/upload/video

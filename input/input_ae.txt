@@ -2,4 +2,9 @@
 ARABIC | #ABtalks Chapters	youtube_playlist	https://www.youtube.com/playlist?list=PLDk8Qa5B23vGUjyEKYoDvdYa678-uLKwJ
 Noor Stars	youtube_channel	https://www.youtube.com/@noorstars
 Om sayf	youtube_channel	https://www.youtube.com/@hdeel
+مصطفى GAME OVER	youtube_channel	https://www.youtube.com/@mustafago
+Bessan Ismail - بيسان اسماعيل	youtube_channel	https://www.youtube.com/@bessanismail
+Ghaith Marwan غيث مروان	youtube_channel	https://www.youtube.com/@ghaithmarwan
+Majd Alzakout	youtube_channel	https://www.youtube.com/@majd_alzakout
 AlArabiya	youtube_channel	https://www.youtube.com/@alarabiya
+Spacetoon	youtube_channel	https://www.youtube.com/SpacetoonYouTube

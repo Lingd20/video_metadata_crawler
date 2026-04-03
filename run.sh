@@ -13,9 +13,10 @@ log() {
 }
 
 config="$PROJECT_ROOT/config/config.yaml"
-input_file="$PROJECT_ROOT/input/input_ae.txt"
-output_file="$PROJECT_ROOT/results/ae_metadata.xlsx"
+input_file=""
+output_file=""
 export_only=""
+refresh_pending=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -23,6 +24,7 @@ while [ $# -gt 0 ]; do
         --input)        input_file="$2";   shift 2 ;;
         --output)       output_file="$2";  shift 2 ;;
         --export-only)  export_only="1";   shift ;;
+        --refresh-pending-urls) refresh_pending="1"; shift ;;
         -h|--help)
             echo "用法: $0 [选项]"
             echo ""
@@ -30,8 +32,9 @@ while [ $# -gt 0 ]; do
             echo "  --config FILE    配置文件路径 (默认: config/config.yaml)"
             echo "  --input FILE     输入文件路径 (覆盖配置文件)"
             echo "  --output FILE    输出文件路径 (覆盖配置文件)"
-            echo "  --export-only    跳过爬取，仅从 checkpoint 导出 Excel"
-            echo "  -h, --help       显示帮助"
+            echo "  --export-only           跳过爬取，仅从 checkpoint 导出 Excel"
+            echo "  --refresh-pending-urls  强制重新拉取待处理视频 URL 列表"
+            echo "  -h, --help              显示帮助"
             exit 0
             ;;
         *) echo "未知参数: $1"; exit 1 ;;
@@ -47,6 +50,7 @@ CMD="python $PROJECT_ROOT/scripts/crawl_all.py --config $config"
 [ -n "$input_file" ]  && CMD="$CMD --input $input_file"
 [ -n "$output_file" ] && CMD="$CMD --output $output_file"
 [ -n "$export_only" ] && CMD="$CMD --export-only"
+[ -n "$refresh_pending" ] && CMD="$CMD --refresh-pending-urls"
 
 $CMD
 
