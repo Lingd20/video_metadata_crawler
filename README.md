@@ -7,6 +7,8 @@
 - **Bilibili**：通过 B 站 API 爬取，支持 UP 主全部投稿 (`bilibili_up`) 和合集/系列 (`bilibili_series`)
 - **YouTube**：通过系统 `yt-dlp` 命令行爬取，支持频道 (`youtube_channel`) 和播放列表 (`youtube_playlist`)
 - **断点续传**：每获取 N 条视频自动保存 checkpoint，中断后重启自动从上次位置继续
+- **两阶段抓取（YouTube / Bilibili）**：先缓存完整「待处理视频 URL 列表」，再按列表逐条拉取详情；续跑时默认不重新拉列表
+- **失败熔断**：单条 URL 连续失败达到阈值后写入失败列表并跳过，避免无限重试；`--refresh-pending-urls` 重拉列表时**不会**清空失败列表与失败计数
 - **按输入文件隔离 checkpoint**：不同输入文件的 checkpoint 存储在独立子目录下
 - **导出模式**：可跳过爬取，直接从已有 checkpoint 导出 Excel
 - **截止日期**：Bilibili 和 YouTube 均可配置截止日期，爬取到早于该日期的视频时自动停止
@@ -113,6 +115,9 @@ checkpoint:
 
 # 仅从 checkpoint 导出 Excel（不爬取）
 ./run.sh --export-only
+
+# 强制重新拉取各条目的「待处理视频 URL 列表」（详见下文「断点续传」）
+./run.sh --refresh-pending-urls
 ```
 
 ## 命令行参数
@@ -123,6 +128,9 @@ checkpoint:
 | `--input FILE` | 输入文件路径（覆盖配置文件中的 `input_file`） |
 | `--output FILE` | 输出文件路径（覆盖配置文件中的输出路径） |
 | `--export-only` | 跳过爬取，仅从已有 checkpoint 导出 Excel |
+| `--refresh-pending-urls` | 强制重新拉取待处理 URL 列表；**保留** `*_failed_urls` 与 `*_url_fail_counts`（见下文） |
+
+`run.sh` 会将 `--refresh-pending-urls` 原样传给 `crawl_all.py`；直接使用 Python 时：`python scripts/crawl_all.py --config ... --refresh-pending-urls`。
 
 ## 输出 Excel 列说明
 
@@ -168,3 +176,19 @@ checkpoint:
 - 例如 `input/input_yue.txt` → `checkpoints/input_yue/`
 - 重新运行时自动检测已完成的条目并跳过
 - 如需重新爬取某个条目，删除对应的 checkpoint JSON 文件即可
+
+### 待处理 URL 列表（YouTube / Bilibili 一致）
+
+1. **首次或需要拉列表时**：把该频道/播放列表/合集下的视频页 URL 完整写入 checkpoint（YouTube：`youtube_pending_urls`；Bilibili：`bilibili_pending_urls`）。
+2. **之后每次运行**：默认**沿用** checkpoint 中的列表，按顺序补全 `videos`；已在 `videos` 中的 URL 会快速跳过。
+3. **何时会重新拉列表**：无列表字段、或列表为空且该条目尚未标记完成时；或使用 **`--refresh-pending-urls`** 强制刷新（例如频道上新视频后希望更新列表）。
+4. **使用 `--refresh-pending-urls` 时**：会替换 `*_pending_urls`，但**不会清空** `youtube_failed_urls` / `youtube_url_fail_counts` 或 B 站侧 `bilibili_failed_urls` / `bilibili_url_fail_counts`（仍失败的 URL 会继续跳过）。
+
+### 单条失败与失败列表
+
+- 某条视频 URL 拉取元数据（YouTube：`yt-dlp -j`；Bilibili：`view` 接口）**连续失败达到 3 次**后，会记入失败列表（YouTube：`youtube_failed_urls`；Bilibili：`bilibili_failed_urls`），后续运行不再对该 URL 重试。
+- 判定「条目是否完成」时：待处理列表中的每条 URL 须**要么**已出现在 `videos` 中，**要么**在失败列表中（用户跳过、触发截止日期等例外以代码中的 `done` 逻辑为准）。
+
+### 历史字段说明
+
+- 旧版 checkpoint 中的 **`youtube_list_cursor`** 等游标字段**当前代码已不再读取**，可视为无效；以 `youtube_pending_urls` 为准。
