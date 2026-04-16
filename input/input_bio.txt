@@ -1,0 +1,4 @@
+Neuro Physiology	youtube_playlist	https://www.youtube.com/playlist?list=PLYcLrRDaR8_dGybNxiLWFdgethb_wO5wc
+biology lecture	youtube_playlist	https://www.youtube.com/playlist?list=PLbNqN9lwMtQJMHvDegWzS-C4_r0F_def4
+Molecular Biology	youtube_playlist	https://www.youtube.com/playlist?list=PLcCMUHuNLFBMiMx0cRPr3pA2yJ2IuuhU0
+生物化学我就不信学不会了	bilibili_series	https://space.bilibili.com/431072581/lists/1857245?type=season
