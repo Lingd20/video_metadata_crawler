@@ -26,6 +26,17 @@ def url_to_archive_key(url: str) -> tuple[str, str] | None:
     return None
 
 
+def _expand_multipart_prefixes(archive: set[tuple[str, str]]) -> set[tuple[str, str]]:
+    """分P视频在 archive 中记录为 'BVxxx_cid' 或 'BVxxx_pN'，
+    但 URL 只含 'BVxxx'。将 BV 前缀补充进匹配集合，使预检能跳过已完成的分P视频。
+    """
+    extra: set[tuple[str, str]] = set()
+    for ext, vid in archive:
+        if ext == "bilibili" and "_" in vid and vid.startswith("BV"):
+            extra.add((ext, vid.split("_", 1)[0]))
+    return extra
+
+
 def download_bilibili(
     *,
     urls: list[str],
@@ -39,6 +50,7 @@ def download_bilibili(
     parallel: int = 1,
 ):
     archive_keys = load_download_archive(archive_path)
+    archive_keys = archive_keys | _expand_multipart_prefixes(archive_keys)
     pending, skipped = filter_urls_by_archive(urls, archive_keys, url_to_archive_key)
 
     urls_file = out_dir / "bilibili_urls.txt"

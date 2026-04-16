@@ -9,6 +9,7 @@ from pathlib import Path
 from bilibili_download import download_bilibili
 from excel_urls import extract_urls_from_excels
 from platform_detect import split_urls_by_platform
+from podcast_download import download_podcast
 from youtube_download import download_youtube
 from yt_dlp_common import YtDlpAudioOptions, YtDlpRuntimeOptions
 
@@ -128,6 +129,18 @@ def main():
             out_dir=out_dir,
             archive_path=archive_path,
             cookies_path=args.cookies_youtube,
+            audio=audio,
+            runtime=runtime,
+            log_path=log_path,
+            task_name=task_name,
+            parallel=args.parallel,
+        )
+    if by_platform.get("podcast"):
+        download_podcast(
+            urls=by_platform["podcast"],
+            out_dir=out_dir,
+            archive_path=archive_path,
+            cookies_path="",
             audio=audio,
             runtime=runtime,
             log_path=log_path,
