@@ -1,11 +1,8 @@
 #!/usr/bin/env python3
-"""Video Metadata Crawler — 主入口脚本
+"""Video Metadata Crawler — 主入口脚本（已迁移到 scripts/url_crawl/）。
 
 从 Bilibili / YouTube 爬取指定频道或播放列表的视频元数据，
 保存到 Excel，支持断点续传和自动去重。
-
-- Bilibili: 通过 B 站 API（BilibiliCrawler）
-- YouTube:  通过系统 yt-dlp 命令行（YouTubeCrawler）
 """
 
 import argparse
@@ -30,9 +27,8 @@ from utils import (
 logger = logging.getLogger(__name__)
 
 _interrupted = False
-# 跳过当前 YouTube 频道/列表（不结束整个进程）；与 Ctrl+C 区分
 _skip_current_youtube = threading.Event()
-
+_skip_current_bilibili = threading.Event()
 
 _MUSIC_CATEGORY_NAMES = {
     "音乐",
@@ -50,7 +46,6 @@ _MUSIC_CATEGORY_NAMES = {
 
 
 def _should_export_to_excel(v: dict) -> bool:
-    """音乐相关视频不写入 Excel，但仍保留在 ckpt。"""
     if (v.get("platform") or "") != "bilibili":
         return True
     cat = (v.get("category") or "").strip()
@@ -75,15 +70,17 @@ def _handle_sigint(signum, frame):
         sys.exit(1)
     _interrupted = True
     logger.warning("收到中断信号，当前任务完成后将安全退出...")
+    _skip_current_youtube.set()
+    _skip_current_bilibili.set()
 
 
 def _handle_skip_youtube(signum, frame):
     _skip_current_youtube.set()
-    logger.warning("收到「跳过当前 YouTube 频道」信号（将尽快结束本条目的爬取）")
+    _skip_current_bilibili.set()
+    logger.warning("收到「跳过当前条目」信号（将尽快结束本条目的爬取）")
 
 
 def _stdin_skip_youtube_watcher():
-    """交互终端下输入 skip / s / next 并回车可跳过当前 YouTube 条目。"""
     while True:
         try:
             line = sys.stdin.readline()
@@ -94,14 +91,11 @@ def _stdin_skip_youtube_watcher():
         t = line.strip().lower()
         if t in ("skip", "s", "next", "skipchannel", "n"):
             _skip_current_youtube.set()
-            logger.warning("已请求跳过当前 YouTube 频道（本条目将尽快结束）")
+            _skip_current_bilibili.set()
+            logger.warning("已请求跳过当前条目（本条目将尽快结束）")
 
 
 def _start_skip_youtube_hotkey(hotkey_spec: str) -> bool:
-    """使用 pynput 注册全局组合键，格式见 https://pynput.readthedocs.io/ 的 GlobalHotKeys。
-
-    示例: "<ctrl>+<shift>+y" 即 Ctrl+Shift+Y。
-    """
     spec = (hotkey_spec or "").strip()
     if not spec:
         return False
@@ -113,12 +107,13 @@ def _start_skip_youtube_hotkey(hotkey_spec: str) -> bool:
 
     def _on_hotkey():
         _skip_current_youtube.set()
-        logger.warning("热键触发：跳过当前 YouTube 频道（本条目将尽快结束）")
+        _skip_current_bilibili.set()
+        logger.warning("热键触发：跳过当前条目（本条目将尽快结束）")
 
     try:
         hk = keyboard.GlobalHotKeys({spec: _on_hotkey})
         hk.start()
-        logger.info("已注册「跳过当前 YouTube 频道」全局热键: %s", spec)
+        logger.info("已注册「跳过当前 YouTube 条目」全局热键: %s", spec)
         return True
     except Exception as e:
         logger.warning("注册全局热键失败（可改用 --skip-youtube-hotkey \"\" 关闭）: %s", e)
@@ -135,31 +130,23 @@ def main():
         "--skip-youtube-hotkey",
         default="<ctrl>+<shift>+y",
         metavar="SPEC",
-        help=(
-            "pynput 全局组合键（GlobalHotKeys 语法），触发时跳过当前 YouTube 条目。"
-            "环境变量 CRAWLER_SKIP_YOUTUBE_HOTKEY 可覆盖此默认值。"
-        ),
+        help="pynput 全局组合键（GlobalHotKeys 语法），触发时跳过当前 YouTube 条目。",
     )
-    parser.add_argument(
-        "--no-skip-youtube-hotkey",
-        action="store_true",
-        help="禁用全局热键（仍可使用终端输入 skip / 信号等方式）",
-    )
+    parser.add_argument("--no-skip-youtube-hotkey", action="store_true", help="禁用全局热键")
     parser.add_argument(
         "--refresh-pending-urls",
         action="store_true",
-        help="强制重新拉取各条目的待处理视频 URL 列表（默认仅在无列表/列表为空且未完成时拉取；不清空失败 URL 与失败计数）",
+        help="强制重新拉取各条目的待处理视频 URL 列表",
     )
     args = parser.parse_args()
 
-    project_root = Path(__file__).resolve().parent.parent
+    project_root = Path(__file__).resolve().parent.parent.parent
     os.chdir(project_root)
 
     config = load_config(args.config)
     setup_logging()
 
     signal.signal(signal.SIGINT, _handle_sigint)
-    # Linux/macOS: kill -USR1 <pid>；Windows: Ctrl+Break（部分终端）
     if hasattr(signal, "SIGUSR1"):
         try:
             signal.signal(signal.SIGUSR1, _handle_skip_youtube)
@@ -205,21 +192,11 @@ def main():
             else:
                 logger.warning("[%d/%d] %s — 无 checkpoint 数据", i, len(entries), entry["name"])
     else:
-        if args.no_skip_youtube_hotkey:
-            hotkey = ""
-        else:
-            hotkey = (os.environ.get("CRAWLER_SKIP_YOUTUBE_HOTKEY") or args.skip_youtube_hotkey).strip()
-
+        hotkey = "" if args.no_skip_youtube_hotkey else (os.environ.get("CRAWLER_SKIP_YOUTUBE_HOTKEY") or args.skip_youtube_hotkey).strip()
         if hotkey:
             _start_skip_youtube_hotkey(hotkey)
-
         if sys.stdin.isatty():
             threading.Thread(target=_stdin_skip_youtube_watcher, daemon=True).start()
-
-        logger.info(
-            "YouTube「跳过当前条目」：优先使用全局热键（默认 Ctrl+Shift+Y，需 pynput）；"
-            "另可终端输入 skip/s/next 回车；Linux/macOS 可 kill -USR1 <pid>；Windows 可试 Ctrl+Break"
-        )
 
         for i, entry in enumerate(entries, 1):
             if _interrupted:
@@ -227,7 +204,6 @@ def main():
                 break
 
             _skip_current_youtube.clear()
-
             logger.info("=" * 60)
             logger.info("[%d/%d] %s (%s) id=%s", i, len(entries), entry["name"], entry["type"], entry["id"])
             logger.info("=" * 60)
@@ -240,11 +216,13 @@ def main():
 
             try:
                 if entry["type"].startswith("bilibili"):
+                    _skip_current_bilibili.clear()
                     videos = bili_crawler.crawl(
                         entry,
                         cp_mgr,
                         save_interval,
                         refresh_pending_urls=args.refresh_pending_urls,
+                        skip_event=_skip_current_bilibili,
                     )
                 else:
                     videos = yt_crawler.crawl(
@@ -289,3 +267,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

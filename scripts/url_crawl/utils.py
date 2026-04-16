@@ -29,6 +29,7 @@ CHECKPOINT_VERSION = 3
 # Configuration & logging
 # ---------------------------------------------------------------------------
 
+
 def setup_logging(log_level="INFO"):
     logging.basicConfig(
         level=getattr(logging, log_level.upper(), logging.INFO),
@@ -46,13 +47,14 @@ def load_config(config_path):
 # Input parsing
 # ---------------------------------------------------------------------------
 
+
 VALID_TYPES = {"bilibili_up", "bilibili_series", "youtube_channel", "youtube_playlist"}
 
 
 def parse_input_file(input_path):
     """Parse input file.
 
-    Preferred format: TSV (name\\ttype\\tid).
+    Preferred format: TSV (name\ttype\tid[\tkeyword_filter]).
     Also tolerates whitespace-separated lines (common editing mistakes).
     """
     entries = []
@@ -72,13 +74,30 @@ def parse_input_file(input_path):
                     len(parts),
                 )
                 continue
-            name = " ".join(parts[:-2]).strip()
-            type_ = parts[-2].strip()
-            id_ = parts[-1].strip()
+
+            # Supported:
+            #  - name, type, id
+            #  - name, type, id, keyword_filter
+            if len(parts) == 3:
+                name = " ".join(parts[:-2]).strip()
+                type_ = parts[-2].strip()
+                id_ = parts[-1].strip()
+                keyword_filter = None
+            else:
+                name = " ".join(parts[:-3]).strip()
+                type_ = parts[-3].strip()
+                id_ = parts[-2].strip()
+                keyword_filter = parts[-1].strip()
+                if keyword_filter in {"", "-", "null", "none", "None"}:
+                    keyword_filter = None
+
             if type_ not in VALID_TYPES:
                 logger.warning("Line %d: unknown type '%s', valid: %s — skipping", line_no, type_, VALID_TYPES)
                 continue
-            entries.append({"name": name, "type": type_, "id": id_})
+            rec = {"name": name, "type": type_, "id": id_}
+            if keyword_filter:
+                rec["keyword_filter"] = keyword_filter
+            entries.append(rec)
     logger.info("Loaded %d entries from %s", len(entries), input_path)
     return entries
 
@@ -86,6 +105,7 @@ def parse_input_file(input_path):
 # ---------------------------------------------------------------------------
 # Bilibili ID / URL resolution
 # ---------------------------------------------------------------------------
+
 
 def resolve_bilibili_up_mid(raw_id: str) -> str:
     """Extract numeric mid from a raw ID or space.bilibili.com URL."""
@@ -141,6 +161,7 @@ def resolve_bilibili_series(raw_id: str):
 # Checkpoint manager
 # ---------------------------------------------------------------------------
 
+
 class CheckpointManager:
     """JSON-file-based checkpoint for resume support."""
 
@@ -185,6 +206,7 @@ class CheckpointManager:
 # Deduplication
 # ---------------------------------------------------------------------------
 
+
 def deduplicate_videos(videos):
     """Deduplicate by video URL, preserving first occurrence order."""
     seen = set()
@@ -200,6 +222,7 @@ def deduplicate_videos(videos):
 # ---------------------------------------------------------------------------
 # Duration formatting
 # ---------------------------------------------------------------------------
+
 
 def format_duration_hms(seconds):
     """Always HH:MM:SS for Excel column 时长(时分秒)."""
@@ -220,6 +243,7 @@ def excel_channel_display_name(v: dict) -> str:
 # ---------------------------------------------------------------------------
 # Excel output
 # ---------------------------------------------------------------------------
+
 
 HEADERS = [
     "视频URL",
@@ -289,3 +313,4 @@ def save_to_excel(videos, output_path):
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     wb.save(output_path)
     logger.info("Saved %d videos → %s", len(videos), output_path)
+

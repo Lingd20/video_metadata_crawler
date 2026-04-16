@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 from datetime import datetime
 from functools import reduce
@@ -30,14 +31,75 @@ def _bvid_from_video_url(url: str) -> str:
     m = re.search(r"bilibili\.com/video/(BV[\w]+)/?", url, re.I)
     return m.group(1) if m else ""
 
+
 # ---------------------------------------------------------------------------
 # WBI signature (Bilibili anti-crawl)
 # ---------------------------------------------------------------------------
 MIXIN_KEY_ENC_TAB = [
-    46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35,
-    27, 43, 5, 49, 33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13,
-    37, 48, 7, 16, 24, 55, 40, 61, 26, 17, 0, 1, 60, 51, 30, 4,
-    22, 25, 54, 21, 56, 59, 6, 63, 57, 62, 11, 36, 20, 34, 44, 52,
+    46,
+    47,
+    18,
+    2,
+    53,
+    8,
+    23,
+    32,
+    15,
+    50,
+    10,
+    31,
+    58,
+    3,
+    45,
+    35,
+    27,
+    43,
+    5,
+    49,
+    33,
+    9,
+    42,
+    19,
+    29,
+    28,
+    14,
+    39,
+    12,
+    38,
+    41,
+    13,
+    37,
+    48,
+    7,
+    16,
+    24,
+    55,
+    40,
+    61,
+    26,
+    17,
+    0,
+    1,
+    60,
+    51,
+    30,
+    4,
+    22,
+    25,
+    54,
+    21,
+    56,
+    59,
+    6,
+    63,
+    57,
+    62,
+    11,
+    36,
+    20,
+    34,
+    44,
+    52,
 ]
 
 # Bilibili top-level / common sub-category names
@@ -53,14 +115,12 @@ CATEGORY_MAP = {
     86: "特摄",
     253: "动漫杂谈",
     27: "综合",
-
     # ===== 番剧 =====
     13: "番剧",
     33: "连载动画",
     32: "完结动画",
     51: "资讯",
     152: "官方延伸",
-
     # ===== 国创 =====
     167: "国创",
     153: "国产动画",
@@ -68,7 +128,6 @@ CATEGORY_MAP = {
     169: "布袋戏",
     170: "资讯",
     195: "动态漫·广播剧",
-
     # ===== 音乐 =====
     3: "音乐",
     28: "原创音乐",
@@ -81,7 +140,6 @@ CATEGORY_MAP = {
     243: "乐评盘点",
     244: "音乐教学",
     194: "电音",
-
     # ===== 舞蹈 =====
     129: "舞蹈",
     20: "宅舞",
@@ -91,7 +149,6 @@ CATEGORY_MAP = {
     199: "明星舞蹈",
     200: "国风舞蹈",
     255: "手势·网红舞",
-
     # ===== 游戏 =====
     4: "游戏",
     17: "单机游戏",
@@ -102,7 +159,6 @@ CATEGORY_MAP = {
     121: "GMV",
     136: "音游",
     19: "Mugen",
-
     # ===== 知识 =====
     36: "知识",
     201: "科学科普",
@@ -115,7 +171,6 @@ CATEGORY_MAP = {
     122: "野生技术协会",
     39: "演讲·公开课",
     96: "星海",
-
     # ===== 科技 =====
     188: "科技",
     95: "数码",
@@ -123,7 +178,6 @@ CATEGORY_MAP = {
     231: "计算机技术",
     232: "科工机械",
     233: "极客DIY",
-
     # ===== 运动 =====
     234: "运动",
     235: "篮球",
@@ -132,7 +186,6 @@ CATEGORY_MAP = {
     236: "竞技体育",
     237: "运动文化",
     238: "运动综合",
-
     # ===== 汽车 =====
     223: "汽车",
     258: "汽车知识科普",
@@ -146,7 +199,6 @@ CATEGORY_MAP = {
     224: "汽车文化",
     225: "汽车极客",
     226: "智能出行",
-
     # ===== 生活 =====
     160: "生活",
     138: "搞笑",
@@ -157,7 +209,6 @@ CATEGORY_MAP = {
     162: "绘画",
     21: "日常",
     254: "亲子",
-
     # ===== 美食 =====
     211: "美食",
     76: "美食制作",
@@ -165,7 +216,6 @@ CATEGORY_MAP = {
     213: "美食测评",
     214: "田园美食",
     215: "美食记录",
-
     # ===== 动物圈 =====
     217: "动物圈",
     218: "喵星人",
@@ -174,7 +224,6 @@ CATEGORY_MAP = {
     221: "野生动物",
     222: "小宠异宠",
     75: "动物综合",
-
     # ===== 鬼畜 =====
     119: "鬼畜",
     22: "鬼畜调教",
@@ -182,21 +231,18 @@ CATEGORY_MAP = {
     126: "人力VOCALOID",
     216: "鬼畜剧场",
     127: "教程演示",
-
     # ===== 时尚 =====
     155: "时尚",
     157: "美妆护肤",
     252: "仿妆cos",
     158: "穿搭",
     159: "时尚潮流",
-
     # ===== 娱乐 =====
     5: "娱乐",
     71: "综艺",
     241: "娱乐杂谈",
     242: "粉丝创作",
     137: "明星综合",
-
     # ===== 影视 =====
     181: "影视",
     182: "影视杂谈",
@@ -204,26 +250,22 @@ CATEGORY_MAP = {
     85: "小剧场",
     184: "预告·资讯",
     256: "短片",
-
     # ===== 纪录片 =====
     177: "纪录片",
     37: "人文·历史",
     178: "科学·探索·自然",
     179: "军事",
     180: "社会·美食·旅行",
-
     # ===== 电影 =====
     23: "电影",
     147: "华语电影",
     145: "欧美电影",
     146: "日本电影",
     83: "其他国家",
-
     # ===== 电视剧 =====
     11: "电视剧",
     185: "国产剧",
     187: "海外剧",
-
     # ===== 资讯 =====
     202: "资讯",
     203: "热点",
@@ -232,10 +274,6 @@ CATEGORY_MAP = {
     206: "综合",
 }
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def _safe_int(val, default=0):
     if isinstance(val, int):
@@ -268,8 +306,6 @@ def _category_name(typeid):
 
 def _extract_category_meta_from_item(item: dict) -> dict:
     """从列表接口条目中提取可用的分区信息（不额外请求 view）。"""
-    # 常见字段：typeid / tid / type_id
-    # 某些接口/结构可能包含：typename / type_name / tname、以及 *_v2 版本
     return {
         "tid": _safe_int(item.get("typeid") or item.get("tid") or item.get("type_id")),
         "tid_v2": _safe_int(item.get("typeid_v2") or item.get("tid_v2") or item.get("type_id_v2")),
@@ -301,13 +337,11 @@ def _debug_dump_category_item(cp_mgr: CheckpointManager, source: str, url: str, 
 def _append_tname_conflict(cp_mgr: CheckpointManager, record: dict):
     """将 tname 与映射不一致的记录写入 checkpoints/aaa_tname_conflict.json。"""
     try:
-        # cp_mgr.dir 形如 checkpoints/<input_stem>/，冲突日志写到其父目录 checkpoints/
         out_path = Path(cp_mgr.dir).parent / "aaa_tname_conflict.json"
         existing = []
         if out_path.exists():
             with open(out_path, "r", encoding="utf-8") as f:
                 existing = json.load(f) or []
-        # 以 url 去重，避免重复追加
         url = record.get("url", "")
         if url and any(r.get("url") == url for r in existing):
             return
@@ -318,12 +352,7 @@ def _append_tname_conflict(cp_mgr: CheckpointManager, record: dict):
         logger.warning("Failed to write tname conflict log: %s", e)
 
 
-# ---------------------------------------------------------------------------
-# BilibiliCrawler
-# ---------------------------------------------------------------------------
-
 class BilibiliCrawler:
-
     _HEADERS = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -335,8 +364,6 @@ class BilibiliCrawler:
 
     def __init__(self, config: dict, cookies_path: str = ""):
         self.session = requests.Session()
-        # Avoid being affected by system proxy settings (common on Windows / corp networks)
-        # Users can still explicitly proxy by setting requests' environment themselves if desired.
         self.session.trust_env = False
         self.session.headers.update(self._HEADERS)
 
@@ -349,6 +376,8 @@ class BilibiliCrawler:
         if cookies_path and os.path.exists(cookies_path):
             self._load_cookies(cookies_path)
         self.cookies_path = cookies_path if cookies_path and os.path.exists(cookies_path) else ""
+
+        self.keyword_filters: dict = config.get("keyword_filters", {}) or {}
 
         self._img_key = None
         self._sub_key = None
@@ -364,8 +393,6 @@ class BilibiliCrawler:
             except ValueError:
                 logger.warning("Invalid cutoff_date '%s', ignored (expected YYYY-MM-DD)", cutoff)
 
-    # -- cookies --
-
     def _load_cookies(self, path):
         with open(path, "r", encoding="utf-8") as f:
             for line in f:
@@ -377,8 +404,6 @@ class BilibiliCrawler:
                     domain, _, ck_path, _, _, name, value = parts[:7]
                     self.session.cookies.set(name, value, domain=domain, path=ck_path)
         logger.info("Loaded bilibili cookies from %s", path)
-
-    # -- WBI signing --
 
     def _refresh_wbi_keys(self):
         if self._img_key and (time.time() - self._wbi_ts) < 3600:
@@ -405,8 +430,6 @@ class BilibiliCrawler:
         query = urlencode(params)
         params["w_rid"] = hashlib.md5((query + mk).encode()).hexdigest()
         return params
-
-    # -- API helpers --
 
     def _get(self, url, params=None, sign=False):
         for attempt in range(1, self.max_retries + 1):
@@ -438,7 +461,6 @@ class BilibiliCrawler:
         return None
 
     def _resolve_category_and_meta(self, cp_mgr: CheckpointManager, source: str, url: str, item: dict) -> tuple[str, dict]:
-        """优先使用条目中自带的 tname；若与映射不一致则记录冲突。"""
         meta = _extract_category_meta_from_item(item)
         mapped = _category_name(meta.get("tid"))
         tname = meta.get("tname", "")
@@ -448,12 +470,45 @@ class BilibiliCrawler:
         _debug_dump_category_item(cp_mgr, source, url, item)
         return category, meta
 
+    def _resolve_keyword_lists(self, entry: dict, source_name: str) -> tuple[list[str], list[str]]:
+        keyword_filter_name = entry.get("keyword_filter")
+        profile = None
+        if keyword_filter_name:
+            profile = self.keyword_filters.get(keyword_filter_name)
+            if not profile:
+                logger.warning(
+                    "[bilibili] %s — keyword_filter '%s' 未在 config.keyword_filters 中找到，跳过过滤",
+                    source_name,
+                    keyword_filter_name,
+                )
+
+        positive_keywords: list = []
+        negative_keywords: list = []
+        if profile:
+            positive_keywords = (
+                profile.get("keywords")
+                or profile.get("positive_keywords")
+                or profile.get("include")
+                or []
+            )
+            negative_keywords = (
+                profile.get("negative_keywords")
+                or profile.get("negative")
+                or profile.get("exclude")
+                or []
+            )
+
+        pos = [str(k).strip().lower() for k in positive_keywords if str(k).strip()]
+        neg = [str(k).strip().lower() for k in negative_keywords if str(k).strip()]
+        return pos, neg
+
     def _bilibili_ckpt_payload(
         self,
         videos: list,
         pending_urls: list[str],
         failed_urls: list[str],
         fail_counts: dict[str, int],
+        filtered_urls: list[str],
         done: bool,
         **extra,
     ) -> dict:
@@ -462,6 +517,7 @@ class BilibiliCrawler:
             "bilibili_pending_urls": pending_urls,
             "bilibili_failed_urls": failed_urls,
             "bilibili_url_fail_counts": fail_counts,
+            "bilibili_filtered_urls": filtered_urls,
             "done": done,
         }
         d.update(extra)
@@ -519,7 +575,7 @@ class BilibiliCrawler:
             "uploader": uploader,
         }
 
-    def _collect_up_pending_urls(self, mid: str) -> list[str]:
+    def _collect_up_pending_urls(self, mid: str) -> list[str] | None:
         urls: list[str] = []
         page = 1
         while True:
@@ -531,7 +587,7 @@ class BilibiliCrawler:
             )
             if data is None:
                 logger.error("[bilibili_up] 列表分页 %d 失败 — 停止收集", page)
-                break
+                return None
             if page == 1:
                 total = data.get("page", {}).get("count", 0)
                 logger.info("  频道稿件总数: %d", total)
@@ -565,7 +621,7 @@ class BilibiliCrawler:
                 out.append(u)
         return out
 
-    def _collect_season_archives_urls(self, mid: str, season_id: str) -> list[str]:
+    def _collect_season_archives_urls(self, mid: str, season_id: str) -> list[str] | None:
         urls: list[str] = []
         page_size = 30
         page = 1
@@ -584,7 +640,7 @@ class BilibiliCrawler:
             )
             if data is None:
                 logger.error("[bilibili_series] season 列表页 %d 失败", page)
-                break
+                return None
             archives = data.get("archives", [])
             if not archives:
                 break
@@ -595,10 +651,7 @@ class BilibiliCrawler:
                 if self.cutoff_dt and v.get("pubdate"):
                     pt = datetime.fromtimestamp(v["pubdate"])
                     if pt < self.cutoff_dt:
-                        logger.info(
-                            "到达 cutoff %s，停止收集列表",
-                            self.cutoff_dt.strftime("%Y-%m-%d"),
-                        )
+                        logger.info("到达 cutoff %s，停止收集列表", self.cutoff_dt.strftime("%Y-%m-%d"))
                         cutoff_reached = True
                         break
                 bvid = v.get("bvid", "") or v.get("bv_id", "")
@@ -616,7 +669,7 @@ class BilibiliCrawler:
                 out.append(u)
         return out
 
-    def _collect_space_list_urls(self, mid: str, list_id: str, list_kind: str) -> list[str]:
+    def _collect_space_list_urls(self, mid: str, list_id: str, list_kind: str) -> list[str] | None:
         urls: list[str] = []
         page_size = 30
         page = 1
@@ -624,7 +677,7 @@ class BilibiliCrawler:
             archives, _total = self._fetch_list_page(list_kind, mid, list_id, page, page_size)
             if archives is None:
                 logger.error("[bilibili_series] list 分页 %d 失败", page)
-                break
+                return None
             if not archives:
                 break
             if page == 1:
@@ -634,10 +687,7 @@ class BilibiliCrawler:
                 if self.cutoff_dt and v.get("pubdate"):
                     pt = datetime.fromtimestamp(v["pubdate"])
                     if pt < self.cutoff_dt:
-                        logger.info(
-                            "到达 cutoff %s，停止收集列表",
-                            self.cutoff_dt.strftime("%Y-%m-%d"),
-                        )
+                        logger.info("到达 cutoff %s，停止收集列表", self.cutoff_dt.strftime("%Y-%m-%d"))
                         cutoff_reached = True
                         break
                 bvid = v.get("bvid", "") or v.get("bv_id", "")
@@ -667,10 +717,26 @@ class BilibiliCrawler:
         fail_counts: dict[str, int],
         videos: list,
         existing_urls: set[str],
+        filtered_urls: list[str],
+        positive_keywords: list[str],
+        negative_keywords: list[str],
+        skip_event: threading.Event | None,
         extra_ckpt: dict,
     ) -> None:
         failed_set = set(failed_urls)
+        filtered_set = set(filtered_urls)
         new_since_save = 0
+
+        def _accept_by_keywords(text_title: str, text_desc: str) -> bool:
+            if not positive_keywords and not negative_keywords:
+                return True
+            content = (text_title or "") + "\n" + (text_desc or "")
+            content_l = content.lower()
+            if negative_keywords and any(neg in content_l for neg in negative_keywords):
+                return False
+            if positive_keywords:
+                return any(pos in content_l for pos in positive_keywords)
+            return True
 
         def _save_state(done: bool):
             cp_mgr.save(
@@ -680,15 +746,22 @@ class BilibiliCrawler:
                     pending_urls,
                     failed_urls,
                     fail_counts,
+                    filtered_urls,
                     done,
                     **extra_ckpt,
                 ),
             )
 
         for url in pending_urls:
+            if skip_event is not None and skip_event.is_set():
+                logger.warning("[%s] %s — 收到跳过信号，已保存进度（下次将续跑）", source_type, source_name)
+                _save_state(False)
+                return
             if url in existing_urls:
                 continue
             if url in failed_set:
+                continue
+            if url in filtered_set:
                 continue
             bvid = _bvid_from_video_url(url)
             if not bvid:
@@ -722,9 +795,20 @@ class BilibiliCrawler:
                 continue
 
             fail_counts.pop(url, None)
-            rec = self._video_record_from_view(
-                view, source_name, source_type, url, cp_mgr, f"{source_type}.view"
-            )
+            title_for_filter = view.get("title") or ""
+            desc_for_filter = view.get("desc") or view.get("description") or ""
+            if not _accept_by_keywords(title_for_filter, desc_for_filter):
+                if url not in failed_set:
+                    failed_urls.append(url)
+                    failed_set.add(url)
+                if url not in filtered_set:
+                    filtered_urls.append(url)
+                    filtered_set.add(url)
+                logger.info("[%s] %s — keyword_filter 不匹配，跳过: %s", source_type, source_name, url)
+                _save_state(False)
+                continue
+
+            rec = self._video_record_from_view(view, source_name, source_type, url, cp_mgr, f"{source_type}.view")
             if rec is None:
                 fail_counts[url] = fail_counts.get(url, 0) + 1
                 if fail_counts[url] >= MAX_URL_FETCH_FAILURES:
@@ -744,13 +828,11 @@ class BilibiliCrawler:
                 time.sleep(float(self.sleep))
 
         def _resolved(u: str) -> bool:
-            return u in existing_urls or u in failed_set
+            return u in existing_urls or u in failed_set or u in filtered_set
 
         done = (not pending_urls) or all(_resolved(u) for u in pending_urls)
         _save_state(done)
         logger.info("[%s] %s — 完成，共 %d 条视频", source_type, source_name, len(videos))
-
-    # -- public crawl interface --
 
     def crawl(
         self,
@@ -758,19 +840,24 @@ class BilibiliCrawler:
         cp_mgr: CheckpointManager,
         save_interval: int = 50,
         refresh_pending_urls: bool = False,
+        skip_event: threading.Event | None = None,
     ):
-        """Crawl videos for one entry, returns list of video dicts."""
         etype = entry["type"]
         if etype == "bilibili_up":
-            return self._crawl_up(entry, cp_mgr, save_interval, refresh_pending_urls)
+            return self._crawl_up(entry, cp_mgr, save_interval, refresh_pending_urls, skip_event)
         if etype == "bilibili_series":
-            return self._crawl_series(entry, cp_mgr, save_interval, refresh_pending_urls)
+            return self._crawl_series(entry, cp_mgr, save_interval, refresh_pending_urls, skip_event)
         logger.error("Unsupported bilibili type: %s", etype)
         return []
 
-    # -- UP主 --
-
-    def _crawl_up(self, entry, cp_mgr, save_interval, refresh_pending_urls: bool = False):
+    def _crawl_up(
+        self,
+        entry,
+        cp_mgr,
+        save_interval,
+        refresh_pending_urls: bool = False,
+        skip_event: threading.Event | None = None,
+    ):
         mid = resolve_bilibili_up_mid(entry["id"])
         source_name = entry["name"]
         cp = cp_mgr.load(entry) or {}
@@ -778,35 +865,29 @@ class BilibiliCrawler:
         existing_urls = {v["url"] for v in videos}
         failed_urls = list(cp.get("bilibili_failed_urls") or [])
         fail_counts = dict(cp.get("bilibili_url_fail_counts") or {})
+        filtered_urls = list(cp.get("bilibili_filtered_urls") or [])
 
-        pending_state, need_fetch = self._resolve_bilibili_pending_state(
-            cp, videos, refresh_pending_urls
-        )
+        positive_keywords, negative_keywords = self._resolve_keyword_lists(entry, source_name)
+
+        pending_state, need_fetch = self._resolve_bilibili_pending_state(cp, videos, refresh_pending_urls)
         if need_fetch:
             if refresh_pending_urls:
                 logger.info("[bilibili_up] %s (mid=%s) — 强制重新拉取视频列表", source_name, mid)
             else:
                 logger.info("[bilibili_up] %s (mid=%s) — 拉取视频列表", source_name, mid)
             pending_urls = self._collect_up_pending_urls(mid)
-            cp_mgr.save(
-                entry,
-                self._bilibili_ckpt_payload(videos, pending_urls, failed_urls, fail_counts, False),
-            )
+            if pending_urls is None:
+                logger.warning("[bilibili_up] %s — 列表拉取失败（疑似网络/连接问题），done 维持 False", source_name)
+                cp_mgr.save(entry, self._bilibili_ckpt_payload(videos, [], failed_urls, fail_counts, filtered_urls, False))
+                return videos
+            cp_mgr.save(entry, self._bilibili_ckpt_payload(videos, pending_urls, failed_urls, fail_counts, filtered_urls, False))
             logger.info("  已缓存 %d 条 URL，将逐条请求 view 补全元数据", len(pending_urls))
         else:
             pending_urls = list(pending_state or [])
-            logger.info(
-                "[bilibili_up] %s — 使用 checkpoint 列表 %d 条，已有 videos %d 条",
-                source_name,
-                len(pending_urls),
-                len(videos),
-            )
+            logger.info("[bilibili_up] %s — 使用 checkpoint 列表 %d 条，已有 videos %d 条", source_name, len(pending_urls), len(videos))
 
         if not pending_urls:
-            cp_mgr.save(
-                entry,
-                self._bilibili_ckpt_payload(videos, [], failed_urls, fail_counts, True),
-            )
+            cp_mgr.save(entry, self._bilibili_ckpt_payload(videos, [], failed_urls, fail_counts, filtered_urls, True))
             return videos
 
         self._bilibili_process_pending_urls(
@@ -820,88 +901,71 @@ class BilibiliCrawler:
             fail_counts,
             videos,
             existing_urls,
+            filtered_urls,
+            positive_keywords,
+            negative_keywords,
+            skip_event,
             {},
         )
         return videos
 
     def _get_uploader_name(self, mid: str) -> str:
-        """通过 mid 获取 UP 主昵称，带缓存。"""
         mid = str(mid)
         if mid in self._mid_name_cache:
             return self._mid_name_cache[mid]
-        data = self._get(
-            "https://api.bilibili.com/x/space/wbi/acc/info",
-            params={"mid": mid},
-            sign=True,
-        )
+        data = self._get("https://api.bilibili.com/x/space/wbi/acc/info", params={"mid": mid}, sign=True)
         name = data.get("name", "") if data else ""
         self._mid_name_cache[mid] = name
         return name
 
     def _resolve_uploader(self, video_item: dict, mid: str) -> str:
-        """优先用 API 返回的 author 字段，否则根据 mid 查询。"""
         author = video_item.get("author", "")
         if author:
             return author
         return self._get_uploader_name(mid)
 
-    # -- 合集 / 系列 --
-
     def _crawl_series(
-        self, entry, cp_mgr, save_interval, refresh_pending_urls: bool = False
+        self,
+        entry,
+        cp_mgr,
+        save_interval,
+        refresh_pending_urls: bool = False,
+        skip_event: threading.Event | None = None,
     ):
         kind, mid, series_id = resolve_bilibili_series(entry["id"])
         source_name = entry["name"]
 
         if kind == "list":
-            return self._crawl_space_list_api(
-                entry, mid, series_id, cp_mgr, save_interval, refresh_pending_urls
-            )
+            return self._crawl_space_list_api(entry, mid, series_id, cp_mgr, save_interval, refresh_pending_urls, skip_event)
 
         cp = cp_mgr.load(entry) or {}
         videos = list(cp.get("videos", []))
         existing_urls = {v["url"] for v in videos}
         failed_urls = list(cp.get("bilibili_failed_urls") or [])
         fail_counts = dict(cp.get("bilibili_url_fail_counts") or {})
+        filtered_urls = list(cp.get("bilibili_filtered_urls") or [])
 
-        pending_state, need_fetch = self._resolve_bilibili_pending_state(
-            cp, videos, refresh_pending_urls
-        )
+        positive_keywords, negative_keywords = self._resolve_keyword_lists(entry, source_name)
+
+        pending_state, need_fetch = self._resolve_bilibili_pending_state(cp, videos, refresh_pending_urls)
         if need_fetch:
             if refresh_pending_urls:
-                logger.info(
-                    "[bilibili_series] %s (season, mid=%s, id=%s) — 强制重新拉取列表",
-                    source_name,
-                    mid,
-                    series_id,
-                )
+                logger.info("[bilibili_series] %s (season, mid=%s, id=%s) — 强制重新拉取列表", source_name, mid, series_id)
             else:
-                logger.info(
-                    "[bilibili_series] %s (season, mid=%s, id=%s) — 拉取视频 URL 列表",
-                    source_name,
-                    mid,
-                    series_id,
-                )
+                logger.info("[bilibili_series] %s (season, mid=%s, id=%s) — 拉取视频 URL 列表", source_name, mid, series_id)
             pending_urls = self._collect_season_archives_urls(mid, series_id)
-            cp_mgr.save(
-                entry,
-                self._bilibili_ckpt_payload(videos, pending_urls, failed_urls, fail_counts, False),
-            )
+            if pending_urls is None:
+                logger.warning("[bilibili_series] %s — 列表拉取失败（疑似网络/连接问题），done 维持 False", source_name)
+                cp_mgr.save(entry, self._bilibili_ckpt_payload(videos, [], failed_urls, fail_counts, filtered_urls, False))
+                return videos
+            cp_mgr.save(entry, self._bilibili_ckpt_payload(videos, pending_urls, failed_urls, fail_counts, filtered_urls, False))
             logger.info("  已缓存 %d 条 URL，将逐条请求 view", len(pending_urls))
         else:
             pending_urls = list(pending_state or [])
-            logger.info(
-                "[bilibili_series] %s (season) — checkpoint 列表 %d 条，已有 videos %d 条",
-                source_name,
-                len(pending_urls),
-                len(videos),
-            )
+            logger.info("[bilibili_series] %s (season) — checkpoint 列表 %d 条，已有 videos %d 条", source_name, len(pending_urls), len(videos))
 
         if not pending_urls:
-            cp_mgr.save(
-                entry,
-                self._bilibili_ckpt_payload(videos, [], failed_urls, fail_counts, True),
-            )
+            cp_mgr.save(entry, self._bilibili_ckpt_payload(videos, [], failed_urls, fail_counts, filtered_urls, True))
             return videos
 
         self._bilibili_process_pending_urls(
@@ -915,6 +979,10 @@ class BilibiliCrawler:
             fail_counts,
             videos,
             existing_urls,
+            filtered_urls,
+            positive_keywords,
+            negative_keywords,
+            skip_event,
             {},
         )
         return videos
@@ -927,70 +995,38 @@ class BilibiliCrawler:
         cp_mgr,
         save_interval,
         refresh_pending_urls: bool = False,
+        skip_event: threading.Event | None = None,
     ):
-        """爬取 space list（/lists/...）的视频。
-
-        B 站的 /lists/{id} URL 可能对应「系列」或「合集」两种类型，
-        使用的 API 不同。先探测类型，再分页收集 URL，最后逐条 view。
-        """
         source_name = entry["name"]
         cp = cp_mgr.load(entry) or {}
         videos = list(cp.get("videos", []))
         existing_urls = {v["url"] for v in videos}
         failed_urls = list(cp.get("bilibili_failed_urls") or [])
         fail_counts = dict(cp.get("bilibili_url_fail_counts") or {})
+        filtered_urls = list(cp.get("bilibili_filtered_urls") or [])
         list_kind = cp.get("bilibili_list_kind") or cp.get("list_kind", "")
 
-        pending_state, need_fetch = self._resolve_bilibili_pending_state(
-            cp, videos, refresh_pending_urls
-        )
+        positive_keywords, negative_keywords = self._resolve_keyword_lists(entry, source_name)
+
+        pending_state, need_fetch = self._resolve_bilibili_pending_state(cp, videos, refresh_pending_urls)
         if need_fetch:
             list_kind = self._detect_list_kind(mid, series_id)
-            logger.info(
-                "[bilibili_series] %s (list, mid=%s, id=%s) — %s，类型=%s",
-                source_name,
-                mid,
-                series_id,
-                "强制刷新列表" if refresh_pending_urls else "拉取视频 URL 列表",
-                list_kind,
-            )
+            logger.info("[bilibili_series] %s (list, mid=%s, id=%s) — %s，类型=%s", source_name, mid, series_id, "强制刷新列表" if refresh_pending_urls else "拉取视频 URL 列表", list_kind)
             pending_urls = self._collect_space_list_urls(mid, series_id, list_kind)
-            cp_mgr.save(
-                entry,
-                self._bilibili_ckpt_payload(
-                    videos,
-                    pending_urls,
-                    failed_urls,
-                    fail_counts,
-                    False,
-                    bilibili_list_kind=list_kind,
-                ),
-            )
+            if pending_urls is None:
+                logger.warning("[bilibili_series] %s — 列表拉取失败（疑似网络/连接问题），done 维持 False", source_name)
+                cp_mgr.save(entry, self._bilibili_ckpt_payload(videos, [], failed_urls, fail_counts, filtered_urls, False, bilibili_list_kind=list_kind))
+                return videos
+            cp_mgr.save(entry, self._bilibili_ckpt_payload(videos, pending_urls, failed_urls, fail_counts, filtered_urls, False, bilibili_list_kind=list_kind))
             logger.info("  已缓存 %d 条 URL，将逐条请求 view", len(pending_urls))
         else:
             pending_urls = list(pending_state or [])
             if not list_kind:
                 list_kind = self._detect_list_kind(mid, series_id)
-            logger.info(
-                "[bilibili_series] %s (list, %s) — checkpoint 列表 %d 条，已有 videos %d 条",
-                source_name,
-                list_kind,
-                len(pending_urls),
-                len(videos),
-            )
+            logger.info("[bilibili_series] %s (list, %s) — checkpoint 列表 %d 条，已有 videos %d 条", source_name, list_kind, len(pending_urls), len(videos))
 
         if not pending_urls:
-            cp_mgr.save(
-                entry,
-                self._bilibili_ckpt_payload(
-                    videos,
-                    [],
-                    failed_urls,
-                    fail_counts,
-                    True,
-                    bilibili_list_kind=list_kind,
-                ),
-            )
+            cp_mgr.save(entry, self._bilibili_ckpt_payload(videos, [], failed_urls, fail_counts, filtered_urls, True, bilibili_list_kind=list_kind))
             return videos
 
         self._bilibili_process_pending_urls(
@@ -1004,37 +1040,28 @@ class BilibiliCrawler:
             fail_counts,
             videos,
             existing_urls,
+            filtered_urls,
+            positive_keywords,
+            negative_keywords,
+            skip_event,
             {"bilibili_list_kind": list_kind},
         )
         return videos
 
     def _detect_list_kind(self, mid: str, list_id: str) -> str:
-        """探测 /lists/{id} 是系列还是合集：先试系列 API，有数据则为 series，否则为 season。"""
-        data = self._get(
-            "https://api.bilibili.com/x/series/archives",
-            params={"mid": mid, "series_id": list_id, "pn": 1, "ps": 1, "sort": "desc"},
-            sign=False,
-        )
+        data = self._get("https://api.bilibili.com/x/series/archives", params={"mid": mid, "series_id": list_id, "pn": 1, "ps": 1, "sort": "desc"}, sign=False)
         if data and data.get("archives"):
             return "series"
         return "season"
 
     def _fetch_list_page(self, list_kind: str, mid: str, list_id: str, page: int, page_size: int):
-        """根据类型调用对应 API，返回 (archives, total) 或 (None, 0) 表示失败。"""
         if list_kind == "series":
-            data = self._get(
-                "https://api.bilibili.com/x/series/archives",
-                params={"mid": mid, "series_id": list_id, "pn": page, "ps": page_size, "sort": "desc"},
-                sign=False,
-            )
+            data = self._get("https://api.bilibili.com/x/series/archives", params={"mid": mid, "series_id": list_id, "pn": page, "ps": page_size, "sort": "desc"}, sign=False)
         else:
-            data = self._get(
-                "https://api.bilibili.com/x/polymer/web-space/seasons_archives_list",
-                params={"mid": mid, "season_id": list_id, "page_num": page, "page_size": page_size, "sort_reverse": "false"},
-                sign=False,
-            )
+            data = self._get("https://api.bilibili.com/x/polymer/web-space/seasons_archives_list", params={"mid": mid, "season_id": list_id, "page_num": page, "page_size": page_size, "sort_reverse": "false"}, sign=False)
         if data is None:
             return None, 0
         archives = data.get("archives", [])
         total = data.get("page", {}).get("total", 0)
         return archives, total
+

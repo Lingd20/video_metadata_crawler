@@ -46,7 +46,7 @@ log "Video Metadata Crawler"
 log "=========================================="
 log "配置文件: $config"
 
-CMD="python $PROJECT_ROOT/scripts/crawl_all.py --config $config"
+CMD="python $PROJECT_ROOT/scripts/url_crawl/crawl_all.py --config $config"
 [ -n "$input_file" ]  && CMD="$CMD --input $input_file"
 [ -n "$output_file" ] && CMD="$CMD --output $output_file"
 [ -n "$export_only" ] && CMD="$CMD --export-only"

@@ -12,6 +12,7 @@
 - **按输入文件隔离 checkpoint**：不同输入文件的 checkpoint 存储在独立子目录下
 - **导出模式**：可跳过爬取，直接从已有 checkpoint 导出 Excel
 - **截止日期**：Bilibili 和 YouTube 均可配置截止日期，爬取到早于该日期的视频时自动停止
+- **关键词过滤（可选）**：在 input 第 4 列填写 `keyword_filter`，爬取时根据「标题或简介」命中关键词且不命中负向关键词才会写入结果
 
 ## 项目结构
 
@@ -57,10 +58,10 @@ pip install yt-dlp
 
 ### 2. 准备输入文件
 
-创建输入文件（TSV 格式），每行三个字段用 Tab 分隔：
+创建输入文件（TSV 格式），每行至少 3 个字段用 Tab 分隔，**可选**增加第 4 列 `keyword_filter`：
 
 ```
-名称	类型	ID
+名称	类型	ID	keyword_filter(可选)
 ```
 
 支持的类型和 ID 格式：
@@ -99,6 +100,10 @@ youtube:
   sleep_interval: 8
   cutoff_date: ""           # 同上
 
+# 关键词过滤（可选）
+# input 第 4 列填写 keyword_filter（profile 名称），然后用该 profile 在这里配置：
+keyword_filters: {}
+
 checkpoint:
   checkpoint_dir: "checkpoints"
   save_interval: 50
@@ -130,7 +135,7 @@ checkpoint:
 | `--export-only` | 跳过爬取，仅从已有 checkpoint 导出 Excel |
 | `--refresh-pending-urls` | 强制重新拉取待处理 URL 列表；**保留** `*_failed_urls` 与 `*_url_fail_counts`（见下文） |
 
-`run.sh` 会将 `--refresh-pending-urls` 原样传给 `crawl_all.py`；直接使用 Python 时：`python scripts/crawl_all.py --config ... --refresh-pending-urls`。
+`run.sh` 会将 `--refresh-pending-urls` 原样传给 `url_crawl/crawl_all.py`；直接使用 Python 时：`python scripts/url_crawl/crawl_all.py --config ... --refresh-pending-urls`。
 
 ## 输出 Excel 列说明
 

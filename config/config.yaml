@@ -24,9 +24,23 @@ bilibili:
 
 # YouTube 爬取配置
 youtube:
-  sleep_interval: 10          # 请求间隔（秒）
+  sleep_interval: 3          # 请求间隔（秒）
   error_sleep_interval: 10   # 错误后等待时间（秒）
-  cutoff_date: "2024-06-30"             # 截止日期（YYYY-MM-DD），早于此日期的视频将停止爬取；留空则不限制
+  metadata_batch_size: 50    # 每次获取的视频数量
+  cutoff_date: ""             # 截止日期（YYYY-MM-DD），早于此日期的视频将停止爬取；留空则不限制
+
+# 关键词过滤（可选）
+# input 文件可在第 4 列填写 keyword_filter（profile 名称），例如：filter1
+# 然后该 profile 在下面配置 positive keywords 与 negative keywords：
+#
+# keyword_filters:
+#   filter1:
+#     keywords: ["关键字1", "关键字2"]           # 标题或简介至少命中其一才通过
+#     negative_keywords: ["负向关键词1", "负向关键词2"]  # 若命中任意负向关键词则直接拒绝
+keyword_filters:
+  movie:
+    keywords: ["粤语中字", "粤语全集", "粤语版"]
+    negative_keywords: ["国语", "中配"]
 
 # 断点续传配置
 checkpoint:
