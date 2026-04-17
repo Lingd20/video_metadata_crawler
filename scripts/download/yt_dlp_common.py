@@ -68,6 +68,34 @@ def load_download_archive(archive_path: Path) -> set[tuple[str, str]]:
     return keys
 
 
+def load_failed_urls(path: Path) -> set[str]:
+    """读取失败 URL 列表（每行一个 URL），返回小集合用于预跳过。"""
+    if not path.exists():
+        return set()
+    out: set[str] = set()
+    for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+        s = (line or "").strip()
+        if not s or s.startswith("#"):
+            continue
+        out.add(s)
+    return out
+
+
+def append_failed_urls(path: Path, urls: list[str]) -> int:
+    """追加失败 URL（去重后追加），返回本次新增写入条数。"""
+    if not urls:
+        return 0
+    path.parent.mkdir(parents=True, exist_ok=True)
+    existing = load_failed_urls(path)
+    new = [u.strip() for u in urls if u and u.strip() and u.strip() not in existing]
+    if not new:
+        return 0
+    with path.open("a", encoding="utf-8") as f:
+        for u in new:
+            f.write(u + "\n")
+    return len(new)
+
+
 def filter_urls_by_archive(
     urls: list[str],
     archive: set[tuple[str, str]],
@@ -365,6 +393,7 @@ def parse_yt_dlp_date(upload_date: str | None) -> str | None:
 def fetch_single_video_metadata(
     url: str,
     cookies_path: str = "",
+    timeout_sec: int = 120,
 ) -> dict | None:
     """Use yt-dlp -j to fetch metadata for a single URL (any platform)."""
     cmd = [
@@ -381,7 +410,7 @@ def fetch_single_video_metadata(
             cmd.extend(["--cookies", str(ck)])
     cmd.append(url)
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=int(timeout_sec))
     except subprocess.TimeoutExpired:
         return None
     if not r.stdout.strip():

@@ -2,21 +2,25 @@
 from __future__ import annotations
 
 import re
+import time
 from pathlib import Path
 
 from yt_dlp_common import (
     YtDlpAudioOptions,
     YtDlpRuntimeOptions,
+    append_failed_urls,
     build_yt_dlp_cmd,
     fetch_single_video_metadata,
     filter_urls_by_archive,
     list_audio_files,
+    load_failed_urls,
     load_download_archive,
     parse_yt_dlp_date,
     run_yt_dlp_and_log,
     run_yt_dlp_parallel,
     write_metadata_entry,
 )
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 def url_to_archive_key(url: str) -> tuple[str, str] | None:
@@ -75,6 +79,15 @@ def download_bilibili(
     archive_keys = archive_keys | _expand_multipart_prefixes(archive_keys)
     pending, skipped = filter_urls_by_archive(urls, archive_keys, url_to_archive_key)
 
+    failed_path = out_dir / "bilibili_failed_urls.txt"
+    failed_urls = load_failed_urls(failed_path)
+    if failed_urls:
+        before = len(pending)
+        pending = [u for u in pending if (u or "").strip() not in failed_urls]
+        skipped_failed = before - len(pending)
+    else:
+        skipped_failed = 0
+
     urls_file = out_dir / "bilibili_urls.txt"
     urls_file.write_text("\n".join(urls) + ("\n" if urls else ""), encoding="utf-8")
     pending_file = out_dir / "bilibili_urls_pending.txt"
@@ -82,7 +95,7 @@ def download_bilibili(
 
     print(
         f"[bilibili] 断点预检: archive {len(archive_keys)} 条，本批 {len(urls)} 条，"
-        f"跳过 {skipped} 条，待下载 {len(pending)} 条。"
+        f"跳过 {skipped} 条，失败跳过 {skipped_failed} 条，待下载 {len(pending)} 条。"
     )
     if not pending:
         return
@@ -138,16 +151,31 @@ def download_bilibili(
             audio_ext=audio_ext,
         )
 
+    # 统计本轮仍未进入 archive 的 URL，写入 failed 列表，避免下次运行反复刷同样错误
+    try:
+        after_archive = load_download_archive(archive_path)
+        still_failed: list[str] = []
+        for u in pending:
+            key = url_to_archive_key(u)
+            if key is None:
+                # 无法提取 key：不自动判定失败，避免误伤
+                continue
+            if (key[0].lower(), key[1]) not in after_archive:
+                still_failed.append(u)
+        wrote = append_failed_urls(failed_path, still_failed)
+        if wrote:
+            print(f"[bilibili] 本轮记录失败 URL: {wrote} 条 → {failed_path}")
+    except Exception:
+        pass
+
     # Write metadata.jsonl for newly downloaded files
     if metadata_path:
         after_files = list_audio_files(out_dir, audio_ext)
         new_files = sorted(after_files - before_files)
         if new_files:
             print(f"[bilibili] 获取 {len(new_files)} 条新音频的元数据…")
-            for i, fp in enumerate(new_files):
-                vid = fp.stem
-                url = None
-                # 尽量复用原始 URL（可能带 ?p=... 或其他参数）
+            # 并发抓取元数据：避免单条 B 站请求慢导致整体卡住
+            def _pick_best_url_for_vid(vid: str) -> str:
                 base_url, base_bvid = _bilibili_part_url_from_id(vid)
                 m_part = re.match(r"^(BV[a-zA-Z0-9]+)_p(\d+)$", vid, re.I)
                 want_p = int(m_part.group(2)) if m_part else None
@@ -156,16 +184,50 @@ def download_bilibili(
                     if not ubvid or ubvid.lower() != base_bvid.lower():
                         continue
                     if want_p is None:
-                        url = u
-                        break
+                        return u
                     mp = re.search(r"[?&]p=(\d+)", u)
                     if mp and int(mp.group(1)) == want_p:
-                        url = u
-                        break
-                if not url:
-                    url = base_url
+                        return u
+                return base_url
 
-                info = fetch_single_video_metadata(url, cookies_path)
+            def _fetch_one(vid: str, url: str):
+                info = fetch_single_video_metadata(url, cookies_path, timeout_sec=30)
+                return vid, url, info
+
+            vid_urls: list[tuple[str, str]] = []
+            for fp in new_files:
+                vid = fp.stem
+                vid_urls.append((vid, _pick_best_url_for_vid(vid)))
+
+            max_workers = min(8, max(1, len(vid_urls)))
+            done = 0
+            ok = 0
+            fail = 0
+            t0_meta = time.time()
+            results: list[tuple[str, str, dict | None]] = []
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                futs = [pool.submit(_fetch_one, vid, url) for vid, url in vid_urls]
+                for fut in as_completed(futs):
+                    vid, url, info = fut.result()
+                    results.append((vid, url, info))
+                    done += 1
+                    if info:
+                        ok += 1
+                    else:
+                        fail += 1
+                        # 限频输出失败条目，避免刷屏
+                        if fail <= 5 or fail % 20 == 0:
+                            print(f"  [bilibili] metadata 失败: {vid}（将写空字段）")
+                    if done % 10 == 0 or done == len(futs):
+                        elapsed = int(time.time() - t0_meta)
+                        print(
+                            f"  [bilibili] metadata 进度: {done}/{len(futs)} "
+                            f"(ok={ok}, fail={fail}, {elapsed}s)"
+                        )
+
+            # 写入时保持按文件名排序（更稳定）
+            results.sort(key=lambda x: x[0])
+            for vid, url, info in results:
                 if info:
                     upload_date = parse_yt_dlp_date(info.get("upload_date"))
                     cats = info.get("categories") or []
@@ -190,8 +252,6 @@ def download_bilibili(
                     category=category or None,
                     publish_date=upload_date,
                 )
-                if (i + 1) % 20 == 0:
-                    print(f"  [bilibili] metadata 进度: {i + 1}/{len(new_files)}")
 
             print(f"  [bilibili] metadata.jsonl 写入 {len(new_files)} 条")
 
