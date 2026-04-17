@@ -3,12 +3,23 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import sys
 import time
 import wave
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from threading import Lock
+
+_print_lock = Lock()
+
+
+def _tprint(*args, **kwargs):
+    """Thread-safe print."""
+    with _print_lock:
+        print(*args, **kwargs)
+        sys.stdout.flush()
 
 
 def write_jsonl(path: Path, record: dict):
@@ -84,6 +95,13 @@ class YtDlpAudioOptions:
     flatten_output: bool = False
 
 
+PLATFORM_SLEEP_DEFAULTS: dict[str, tuple[float, float]] = {
+    "youtube": (2.0, 6.0),
+    "bilibili": (1.0, 3.0),
+    "podcast": (0.5, 2.0),
+}
+
+
 @dataclass(frozen=True)
 class YtDlpRuntimeOptions:
     sleep_interval: float = 2.0
@@ -93,43 +111,62 @@ class YtDlpRuntimeOptions:
 def build_yt_dlp_cmd(
     *,
     out_dir: Path,
-    pending_file: Path,
+    pending_file: Path | None = None,
     archive_path: Path,
     cookies_path: str,
     audio: YtDlpAudioOptions,
     runtime: YtDlpRuntimeOptions,
+    output_template: str = "",
+    subtitle_output_template: str = "",
+    extra_args: list[str] | None = None,
+    format_override: str = "",
 ) -> list[str]:
+    if not output_template:
+        output_template = (
+            "media/%(id)s.%(ext)s" if audio.flatten_output
+            else "%(extractor)s/%(id)s.%(ext)s"
+        )
+
     cmd = [
         "yt-dlp",
         "--ignore-errors",
         "--no-progress",
-        "--sleep-interval",
-        str(runtime.sleep_interval),
-        "--max-sleep-interval",
-        str(runtime.max_sleep_interval),
-        "--download-archive",
-        str(archive_path),
-        "-P",
-        str(out_dir),
+        "--js-runtimes", "node",
+        "--remote-components", "ejs:github",
+        "--sleep-interval", str(runtime.sleep_interval),
+        "--max-sleep-interval", str(runtime.max_sleep_interval),
+        "--download-archive", str(archive_path),
+        "-P", str(out_dir),
         "-x",
-        "--audio-format",
-        str(audio.audio_format),
+        "--audio-format", str(audio.audio_format),
         "--postprocessor-args",
         f"ffmpeg:-ar {int(audio.audio_sample_rate)} -ac {int(audio.audio_channels)} -sample_fmt {audio.audio_sample_fmt}",
-        "-o",
-        ("media/%(id)s.%(ext)s" if audio.flatten_output else "%(extractor)s/%(id)s.%(ext)s"),
-        "-a",
-        str(pending_file),
+        "-o", output_template,
     ]
+    if subtitle_output_template:
+        # 使用 subtitle: 避免 Windows 路径出现 subtitles# 前缀目录
+        cmd.extend(["-o", f"subtitle:{subtitle_output_template}"])
+    if pending_file:
+        cmd.extend(["-a", str(pending_file)])
     if cookies_path:
         ck = Path(cookies_path)
         if not ck.exists():
             raise SystemExit(f"Cookies 文件不存在: {ck}")
         cmd.extend(["--cookies", str(ck)])
-    if audio.format:
-        cmd.extend(["-f", audio.format])
+    # 下载阶段固定用 android client，避免 web 字幕需要 PO Token 而导致字幕缺失。
+    # cookies 仅用于鉴权，不切换 player_client。
+    cmd.extend(["--extractor-args", "youtube:player_client=android"])
+    cmd.extend(["--extractor-args", "youtube:skip=live,members_only"])
+    fmt = format_override or audio.format or "bestaudio/best"
+    cmd.extend(["-f", fmt])
+    if extra_args:
+        cmd.extend(extra_args)
     return cmd
 
+
+# ---------------------------------------------------------------------------
+# Single-process runner (unchanged logic)
+# ---------------------------------------------------------------------------
 
 def run_yt_dlp_and_log(
     *,
@@ -166,21 +203,36 @@ def run_yt_dlp_and_log(
         write_jsonl(log_path, {**base, "event": "end", "elapsed_sec": round(time.time() - t0, 3)})
 
 
+# ---------------------------------------------------------------------------
+# Parallel runner
+# ---------------------------------------------------------------------------
+
 def _run_worker(
     worker_id: int,
     cmd: list[str],
     platform: str,
     url_count: int,
 ) -> tuple[int, int | None]:
-    """Run a single yt-dlp worker. Returns (worker_id, returncode)."""
-    print(f"[{platform}] worker {worker_id}: 开始下载 {url_count} 条")
+    """Run a single yt-dlp worker, prefixing every output line with worker id."""
+    prefix = f"[{platform}:w{worker_id}]"
+    _tprint(f"{prefix} 开始下载 {url_count} 条")
     try:
-        proc = subprocess.run(cmd, check=False)
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        if proc.stdout:
+            for line in proc.stdout:
+                _tprint(f"{prefix} {line}", end="")
+        proc.wait()
         rc = proc.returncode
     except Exception as e:
-        print(f"[{platform}] worker {worker_id}: 异常 — {e}")
+        _tprint(f"{prefix} 异常 — {e}")
         return worker_id, None
-    print(f"[{platform}] worker {worker_id}: 完成 (exit={rc})")
+    _tprint(f"{prefix} 完成 (exit={rc})")
     return worker_id, rc
 
 
@@ -197,6 +249,10 @@ def run_yt_dlp_parallel(
     record_base: dict,
     audio_ext: str,
     file_prefix: str = "pending",
+    output_template: str = "",
+    subtitle_output_template: str = "",
+    extra_args: list[str] | None = None,
+    format_override: str = "",
 ):
     """Split pending URLs across *parallel* yt-dlp workers and run concurrently."""
     n = max(1, min(parallel, len(pending_urls)))
@@ -226,6 +282,10 @@ def run_yt_dlp_parallel(
             cookies_path=cookies_path,
             audio=audio,
             runtime=runtime,
+            output_template=output_template,
+            subtitle_output_template=subtitle_output_template,
+            extra_args=extra_args,
+            format_override=format_override,
         )
         cmds.append(cmd)
 
@@ -260,3 +320,78 @@ def run_yt_dlp_parallel(
     if interrupted:
         raise SystemExit(130)
 
+
+# ---------------------------------------------------------------------------
+# Metadata helpers
+# ---------------------------------------------------------------------------
+
+def write_metadata_entry(
+    metadata_path: Path,
+    video_id: str,
+    duration_s: float,
+    platform: str,
+    url: str,
+    channel: str | None,
+    category: str | None,
+    publish_date: str | None,
+    has_manual_subs: bool = False,
+):
+    """Append one entry to metadata.jsonl."""
+    entry = {
+        "id": video_id,
+        "duration_s": round(duration_s, 2),
+        "has_manual_subs": has_manual_subs,
+        "metainfo": {
+            "platform": platform,
+            "url": url,
+            "channel": channel,
+            "category": category,
+            "publish_date": publish_date,
+        },
+    }
+    write_jsonl(metadata_path, entry)
+
+
+def parse_yt_dlp_date(upload_date: str | None) -> str | None:
+    """Convert yt-dlp upload_date (YYYYMMDD) to YYYY/MM/DD."""
+    if not upload_date or len(upload_date) < 8:
+        return None
+    try:
+        return f"{upload_date[:4]}/{upload_date[4:6]}/{upload_date[6:8]}"
+    except Exception:
+        return None
+
+
+def fetch_single_video_metadata(
+    url: str,
+    cookies_path: str = "",
+) -> dict | None:
+    """Use yt-dlp -j to fetch metadata for a single URL (any platform)."""
+    cmd = [
+        "yt-dlp",
+        "-j",
+        "--ignore-errors",
+        "--js-runtimes", "node",
+        "--remote-components", "ejs:github",
+        "--no-download",
+    ]
+    if cookies_path:
+        ck = Path(cookies_path)
+        if ck.exists():
+            cmd.extend(["--cookies", str(ck)])
+    cmd.append(url)
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    except subprocess.TimeoutExpired:
+        return None
+    if not r.stdout.strip():
+        return None
+    for line in r.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            return json.loads(line)
+        except json.JSONDecodeError:
+            continue
+    return None

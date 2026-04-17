@@ -12,10 +12,12 @@ DEFAULT_BILIBILI_COOKIES_PATH="config/bilibili_cookies.txt"
 DEFAULT_YOUTUBE_COOKIES_PATH="config/youtube_cookies.txt"
 DEFAULT_LIMIT=""
 DEFAULT_ARCHIVE=""              # 留空则使用 <任务目录>/downloaded.txt
-DEFAULT_SLEEP_INTERVAL="1"
-DEFAULT_MAX_SLEEP_INTERVAL="3"
 DEFAULT_FORMAT=""               # 留空让 yt-dlp 自选
-DEFAULT_PARALLEL="2"           # 并行下载数（同时运行的 yt-dlp 进程数）
+DEFAULT_PARALLEL="4"           # 并行下载数（同时运行的 yt-dlp 进程数）
+DEFAULT_SLEEP_YOUTUBE=""        # 留空使用 Python 默认 2.0
+DEFAULT_SLEEP_BILIBILI=""       # 留空使用 Python 默认 1.0
+DEFAULT_SLEEP_PODCAST=""        # 留空使用 Python 默认 0.5
+DEFAULT_YOUTUBE_SUB_LANGS="pt"    # 留空：只要有手动字幕就下载；否则按逗号分隔的语种列表下载
 
 usage() {
   cat <<'EOF'
@@ -23,8 +25,10 @@ usage() {
   ./download.sh [excel1.xlsx excel2.xlsx ...] [--excel FILE]... [--excels FILE...]
                [--out DIR] [--task-name NAME]
                [--cookies-bilibili FILE] [--cookies-youtube FILE]
-               [--limit N] [--archive FILE] [--sleep-interval S] [--max-sleep-interval S] [--format FMT]
+               [--youtube-sub-langs LANGS]
+               [--limit N] [--archive FILE] [--format FMT]
                [-j|--parallel N]
+               [--sleep-youtube S] [--sleep-bilibili S] [--sleep-podcast S]
 
 说明:
   - 推荐直接使用 Python 脚本：python scripts/download/download_all.py --excel <a.xlsx> --excel <b.xlsx> ...
@@ -51,12 +55,14 @@ OUT_DIR="$DEFAULT_OUT_DIR"
 TASK_NAME="$DEFAULT_TASK_NAME"
 COOKIES_BILIBILI="$DEFAULT_BILIBILI_COOKIES_PATH"
 COOKIES_YOUTUBE="$DEFAULT_YOUTUBE_COOKIES_PATH"
+YOUTUBE_SUB_LANGS="$DEFAULT_YOUTUBE_SUB_LANGS"
 LIMIT="$DEFAULT_LIMIT"
 ARCHIVE_PATH="$DEFAULT_ARCHIVE"
-SLEEP_INTERVAL="$DEFAULT_SLEEP_INTERVAL"
-MAX_SLEEP_INTERVAL="$DEFAULT_MAX_SLEEP_INTERVAL"
 FORMAT="$DEFAULT_FORMAT"
 PARALLEL="$DEFAULT_PARALLEL"
+SLEEP_YOUTUBE="$DEFAULT_SLEEP_YOUTUBE"
+SLEEP_BILIBILI="$DEFAULT_SLEEP_BILIBILI"
+SLEEP_PODCAST="$DEFAULT_SLEEP_PODCAST"
 
 EXCELS=()
 
@@ -100,6 +106,10 @@ while [[ $# -gt 0 ]]; do
       COOKIES_YOUTUBE="$2"
       shift 2
       ;;
+    --youtube-sub-langs)
+      YOUTUBE_SUB_LANGS="$2"
+      shift 2
+      ;;
     --limit)
       LIMIT="$2"
       shift 2
@@ -108,12 +118,16 @@ while [[ $# -gt 0 ]]; do
       ARCHIVE_PATH="$2"
       shift 2
       ;;
-    --sleep-interval)
-      SLEEP_INTERVAL="$2"
+    --sleep-youtube)
+      SLEEP_YOUTUBE="$2"
       shift 2
       ;;
-    --max-sleep-interval)
-      MAX_SLEEP_INTERVAL="$2"
+    --sleep-bilibili)
+      SLEEP_BILIBILI="$2"
+      shift 2
+      ;;
+    --sleep-podcast)
+      SLEEP_PODCAST="$2"
       shift 2
       ;;
     --format)
@@ -152,17 +166,23 @@ fi
 if [[ -n "$COOKIES_YOUTUBE" ]]; then
   PY_ARGS+=(--cookies-youtube "$COOKIES_YOUTUBE")
 fi
+if [[ -n "$YOUTUBE_SUB_LANGS" ]]; then
+  PY_ARGS+=(--youtube-sub-langs "$YOUTUBE_SUB_LANGS")
+fi
 if [[ -n "$LIMIT" ]]; then
   PY_ARGS+=(--limit "$LIMIT")
 fi
 if [[ -n "$ARCHIVE_PATH" ]]; then
   PY_ARGS+=(--archive "$ARCHIVE_PATH")
 fi
-if [[ -n "$SLEEP_INTERVAL" ]]; then
-  PY_ARGS+=(--sleep-interval "$SLEEP_INTERVAL")
+if [[ -n "$SLEEP_YOUTUBE" ]]; then
+  PY_ARGS+=(--sleep-youtube "$SLEEP_YOUTUBE")
 fi
-if [[ -n "$MAX_SLEEP_INTERVAL" ]]; then
-  PY_ARGS+=(--max-sleep-interval "$MAX_SLEEP_INTERVAL")
+if [[ -n "$SLEEP_BILIBILI" ]]; then
+  PY_ARGS+=(--sleep-bilibili "$SLEEP_BILIBILI")
+fi
+if [[ -n "$SLEEP_PODCAST" ]]; then
+  PY_ARGS+=(--sleep-podcast "$SLEEP_PODCAST")
 fi
 if [[ -n "$FORMAT" ]]; then
   PY_ARGS+=(--format "$FORMAT")
