@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""从一个或多个 Excel 读取 URL，合并去重后按平台调用下载脚本（yt-dlp）。"""
+"""从一个或多个 Excel 读取 URL + metainfo，按平台分发给 yt-dlp 下载音频。
+
+下载阶段不再做 yt-dlp -j 二次抓取、不再区分有/无字幕。metainfo（频道、
+标题、发布时间等）直接来自 url_crawl 阶段写入 Excel 的字段。
+"""
 
 from __future__ import annotations
 
@@ -7,7 +11,7 @@ import argparse
 from pathlib import Path
 
 from bilibili_download import download_bilibili
-from excel_urls import extract_urls_from_excels
+from excel_urls import extract_rows_from_excels
 from platform_detect import split_urls_by_platform
 from podcast_download import download_podcast
 from youtube_download import download_youtube
@@ -22,18 +26,18 @@ def _default_task_name(excel_paths: list[str]) -> str:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="从一个或多个 Excel 读取 URL，用 yt-dlp 下载（按平台分发）")
+    parser = argparse.ArgumentParser(description="从 Excel 读取 URL + metainfo，用 yt-dlp 下载音频（按平台分发）")
     parser.add_argument(
         "--excel",
         action="append",
         default=[],
-        help='包含"视频URL"列的 Excel 路径；可重复传参指定多个',
+        help='包含"视频URL"等列的 Excel 路径；可重复传参指定多个',
     )
     parser.add_argument(
         "--excels",
         nargs="+",
         default=[],
-        help='包含"视频URL"列的多个 Excel 路径（等价于多次 --excel）',
+        help='包含"视频URL"等列的多个 Excel 路径（等价于多次 --excel）',
     )
     parser.add_argument("--out", default="downloads", help="输出根目录（默认: downloads）")
     parser.add_argument(
@@ -43,11 +47,6 @@ def main():
     )
     parser.add_argument("--cookies-bilibili", default="", help="B 站 cookies.txt（可选）")
     parser.add_argument("--cookies-youtube", default="", help="YouTube cookies.txt（可选）")
-    parser.add_argument(
-        "--youtube-sub-langs",
-        default="",
-        help="仅下载这些语种的【手动字幕】（逗号分隔，如 pt,en 或 pt-PT）。留空表示只要有手动字幕就下载。",
-    )
     parser.add_argument("--limit", type=int, default=0, help="只处理前 N 条（调试用，0 表示不限制）")
     parser.add_argument("--archive", default="", help="download-archive 文件路径（默认: <任务目录>/downloaded.txt）")
     parser.add_argument("--format", default="", help="yt-dlp -f 格式选择（默认留空让 yt-dlp 自选）")
@@ -65,7 +64,6 @@ def main():
         type=int, default=2,
         help="并行下载数（同时运行的 yt-dlp 进程数，默认 2；设为 1 禁用并行）",
     )
-    # Per-platform sleep overrides (if not set, uses PLATFORM_SLEEP_DEFAULTS)
     parser.add_argument("--sleep-youtube", type=float, default=0, help="YouTube sleep-interval（默认 2.0）")
     parser.add_argument("--sleep-bilibili", type=float, default=0, help="Bilibili sleep-interval（默认 1.0）")
     parser.add_argument("--sleep-podcast", type=float, default=0, help="Podcast sleep-interval（默认 0.5）")
@@ -76,7 +74,7 @@ def main():
     if not excel_paths:
         raise SystemExit("请至少指定一个 Excel：--excel a.xlsx 或 --excels a.xlsx b.xlsx ...")
 
-    urls = extract_urls_from_excels(excel_paths)
+    urls, metadata_by_url = extract_rows_from_excels(excel_paths)
     if args.limit and args.limit > 0:
         urls = urls[: args.limit]
     if not urls:
@@ -90,7 +88,10 @@ def main():
 
     urls_file = out_dir / "urls.txt"
     urls_file.write_text("\n".join(urls) + "\n", encoding="utf-8")
-    print(f"已写入合并去重后的全量 URL: {urls_file}（{len(urls)} 条）")
+    print(
+        f"已写入合并去重后的全量 URL: {urls_file}（{len(urls)} 条，"
+        f"metainfo {len(metadata_by_url)} 条）"
+    )
 
     archive_path = Path(args.archive) if args.archive else (out_dir / "downloaded.txt")
     log_path = out_dir / "downloads.log.jsonl"
@@ -135,6 +136,7 @@ def main():
             task_name=task_name,
             parallel=args.parallel,
             metadata_path=metadata_path,
+            metadata_by_url=metadata_by_url,
         )
     if by_platform.get("youtube"):
         download_youtube(
@@ -148,7 +150,7 @@ def main():
             task_name=task_name,
             parallel=args.parallel,
             metadata_path=metadata_path,
-            sub_langs=args.youtube_sub_langs,
+            metadata_by_url=metadata_by_url,
         )
     if by_platform.get("podcast"):
         download_podcast(
@@ -162,6 +164,7 @@ def main():
             task_name=task_name,
             parallel=args.parallel,
             metadata_path=metadata_path,
+            metadata_by_url=metadata_by_url,
         )
 
     print(f"完成。metadata → {metadata_path}")

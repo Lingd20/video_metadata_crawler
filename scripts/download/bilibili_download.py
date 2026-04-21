@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+"""Bilibili 下载模块：直接下载音频，并从 Excel 表格写入 metadata.jsonl。
+
+不再使用 yt-dlp -j 单条抓取 duration/channel/category 等字段——这些都已在
+url_crawl 阶段写入 Excel，本脚本读表写盘即可。
+"""
+
 from __future__ import annotations
 
 import re
@@ -10,17 +16,14 @@ from yt_dlp_common import (
     YtDlpRuntimeOptions,
     append_failed_urls,
     build_yt_dlp_cmd,
-    fetch_single_video_metadata,
     filter_urls_by_archive,
     list_audio_files,
     load_failed_urls,
     load_download_archive,
-    parse_yt_dlp_date,
     run_yt_dlp_and_log,
     run_yt_dlp_parallel,
     write_metadata_entry,
 )
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 def url_to_archive_key(url: str) -> tuple[str, str] | None:
@@ -48,10 +51,7 @@ def _extract_bvid(url: str) -> str | None:
 
 
 def _bilibili_part_url_from_id(vid: str) -> tuple[str, str]:
-    """Return (url, base_bvid) from downloaded id.
-
-    yt-dlp 对 B 站分P常用 id 形如 BVxxxx_p3；需要转成 ?p=3 才能正确抓到该分P的 duration 等信息。
-    """
+    """从下载后的 id 还原 (url, base_bvid)。id 形如 BVxxxx 或 BVxxxx_p3。"""
     v = (vid or "").strip()
     m = re.match(r"^(BV[a-zA-Z0-9]+)_p(\d+)$", v, re.I)
     if m:
@@ -74,6 +74,7 @@ def download_bilibili(
     task_name: str,
     parallel: int = 1,
     metadata_path: Path | None = None,
+    metadata_by_url: dict[str, dict] | None = None,
 ):
     archive_keys = load_download_archive(archive_path)
     archive_keys = archive_keys | _expand_multipart_prefixes(archive_keys)
@@ -110,10 +111,9 @@ def download_bilibili(
         "skipped_by_archive": skipped,
     }
     audio_ext = (audio.audio_format or "wav").lower()
-    output_tpl = "unsubtitled/bilibili/audios/%(id)s.%(ext)s"
+    output_tpl = "bilibili/audio/%(id)s.%(ext)s"
 
     before_files = list_audio_files(out_dir, audio_ext)
-
     bili_fmt = "bestaudio"
 
     if parallel > 1 and len(pending) > 1:
@@ -151,6 +151,8 @@ def download_bilibili(
             audio_ext=audio_ext,
         )
 
+    after_files = list_audio_files(out_dir, audio_ext)
+    new_files = sorted(after_files - before_files)
     # 统计本轮仍未进入 archive 的 URL，写入 failed 列表，避免下次运行反复刷同样错误
     try:
         after_archive = load_download_archive(archive_path)
@@ -168,92 +170,64 @@ def download_bilibili(
     except Exception:
         pass
 
-    # Write metadata.jsonl for newly downloaded files
-    if metadata_path:
-        after_files = list_audio_files(out_dir, audio_ext)
-        new_files = sorted(after_files - before_files)
-        if new_files:
-            print(f"[bilibili] 获取 {len(new_files)} 条新音频的元数据…")
-            # 并发抓取元数据：避免单条 B 站请求慢导致整体卡住
-            def _pick_best_url_for_vid(vid: str) -> str:
-                base_url, base_bvid = _bilibili_part_url_from_id(vid)
-                m_part = re.match(r"^(BV[a-zA-Z0-9]+)_p(\d+)$", vid, re.I)
-                want_p = int(m_part.group(2)) if m_part else None
-                for u in pending:
-                    ubvid = _extract_bvid(u)
-                    if not ubvid or ubvid.lower() != base_bvid.lower():
-                        continue
-                    if want_p is None:
-                        return u
-                    mp = re.search(r"[?&]p=(\d+)", u)
-                    if mp and int(mp.group(1)) == want_p:
-                        return u
-                return base_url
+    if not metadata_path:
+        return
 
-            def _fetch_one(vid: str, url: str):
-                info = fetch_single_video_metadata(url, cookies_path, timeout_sec=30)
-                return vid, url, info
+    if not new_files:
+        return
 
-            vid_urls: list[tuple[str, str]] = []
-            for fp in new_files:
-                vid = fp.stem
-                vid_urls.append((vid, _pick_best_url_for_vid(vid)))
+    # 构造 bvid -> [(url, part_idx, meta)] 反查索引
+    bvid_index: dict[str, list[tuple[str, int | None, dict]]] = {}
+    for u, meta in (metadata_by_url or {}).items():
+        bvid = _extract_bvid(u)
+        if not bvid:
+            continue
+        mp = re.search(r"[?&]p=(\d+)", u)
+        part = int(mp.group(1)) if mp else None
+        bvid_index.setdefault(bvid.lower(), []).append((u, part, meta))
 
-            max_workers = min(8, max(1, len(vid_urls)))
-            done = 0
-            ok = 0
-            fail = 0
-            t0_meta = time.time()
-            results: list[tuple[str, str, dict | None]] = []
-            with ThreadPoolExecutor(max_workers=max_workers) as pool:
-                futs = [pool.submit(_fetch_one, vid, url) for vid, url in vid_urls]
-                for fut in as_completed(futs):
-                    vid, url, info = fut.result()
-                    results.append((vid, url, info))
-                    done += 1
-                    if info:
-                        ok += 1
-                    else:
-                        fail += 1
-                        # 限频输出失败条目，避免刷屏
-                        if fail <= 5 or fail % 20 == 0:
-                            print(f"  [bilibili] metadata 失败: {vid}（将写空字段）")
-                    if done % 10 == 0 or done == len(futs):
-                        elapsed = int(time.time() - t0_meta)
-                        print(
-                            f"  [bilibili] metadata 进度: {done}/{len(futs)} "
-                            f"(ok={ok}, fail={fail}, {elapsed}s)"
-                        )
+    written = 0
+    for fp in new_files:
+        try:
+            fp.relative_to(out_dir / "bilibili" / "audio")
+        except ValueError:
+            continue
+        vid = fp.stem
+        base_url, base_bvid = _bilibili_part_url_from_id(vid)
+        m_part = re.match(r"^(BV[a-zA-Z0-9]+)_p(\d+)$", vid, re.I)
+        want_p = int(m_part.group(2)) if m_part else None
 
-            # 写入时保持按文件名排序（更稳定）
-            results.sort(key=lambda x: x[0])
-            for vid, url, info in results:
-                if info:
-                    upload_date = parse_yt_dlp_date(info.get("upload_date"))
-                    cats = info.get("categories") or []
-                    category = ", ".join(cats) if isinstance(cats, list) else str(cats or "")
-                    if not category:
-                        category = info.get("category") or None
-                    channel = info.get("channel") or info.get("uploader") or None
-                    duration = info.get("duration") or 0
-                else:
-                    upload_date = None
-                    category = None
-                    channel = None
-                    duration = 0
+        matched_url = base_url
+        matched_meta: dict = {}
+        for u, part, meta in bvid_index.get(base_bvid.lower(), []):
+            if want_p is None:
+                matched_url = u
+                matched_meta = meta
+                break
+            if part == want_p:
+                matched_url = u
+                matched_meta = meta
+                break
+        else:
+            # 分P 情况下，若表格里只收录了主页 URL（无 ?p=），也接受作为兜底
+            for u, part, meta in bvid_index.get(base_bvid.lower(), []):
+                if part is None:
+                    matched_url = u
+                    matched_meta = meta
+                    break
 
-                write_metadata_entry(
-                    metadata_path=metadata_path,
-                    video_id=vid,
-                    duration_s=float(duration),
-                    platform="bilibili",
-                    url=url,
-                    channel=channel,
-                    category=category or None,
-                    publish_date=upload_date,
-                )
+        metainfo = dict(matched_meta.get("metainfo") or {})
+        write_metadata_entry(
+            metadata_path,
+            video_id=vid,
+            platform="bilibili",
+            url=matched_url,
+            duration_s=matched_meta.get("duration_s"),
+            metainfo_extra=metainfo,
+        )
+        written += 1
 
-            print(f"  [bilibili] metadata.jsonl 写入 {len(new_files)} 条")
+    print(f"  [bilibili] metadata.jsonl 写入 {written} 条")
 
 
 if __name__ == "__main__":

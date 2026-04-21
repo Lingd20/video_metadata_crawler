@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import json
-import re
 import subprocess
 import sys
 import time
 import wave
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from threading import Lock
@@ -355,28 +354,29 @@ def run_yt_dlp_parallel(
 
 def write_metadata_entry(
     metadata_path: Path,
+    *,
     video_id: str,
-    duration_s: float,
     platform: str,
     url: str,
-    channel: str | None,
-    category: str | None,
-    publish_date: str | None,
-    has_manual_subs: bool = False,
+    duration_s: float | None = None,
+    metainfo_extra: dict | None = None,
 ):
-    """Append one entry to metadata.jsonl."""
-    entry = {
-        "id": video_id,
-        "duration_s": round(duration_s, 2),
-        "has_manual_subs": has_manual_subs,
-        "metainfo": {
-            "platform": platform,
-            "url": url,
-            "channel": channel,
-            "category": category,
-            "publish_date": publish_date,
-        },
-    }
+    """Append one entry to metadata.jsonl.
+
+    metainfo 字段直接由调用方从 Excel 行映射而来（不再做 yt-dlp -j 二次抓取）。
+    `platform` 和 `url` 会覆盖 metainfo_extra 中同名字段，保证权威。
+    """
+    metainfo: dict = {"platform": platform, "url": url}
+    if metainfo_extra:
+        for k, v in metainfo_extra.items():
+            if k in ("platform", "url"):
+                continue
+            metainfo[k] = v
+
+    entry: dict = {"id": video_id}
+    if duration_s is not None:
+        entry["duration_s"] = round(float(duration_s), 2)
+    entry["metainfo"] = metainfo
     write_jsonl(metadata_path, entry)
 
 

@@ -27,7 +27,7 @@ youtube:
   sleep_interval: 3          # 请求间隔（秒）
   error_sleep_interval: 10   # 错误后等待时间（秒）
   metadata_batch_size: 50    # 每次获取的视频数量
-  cutoff_date: ""             # 截止日期（YYYY-MM-DD），早于此日期的视频将停止爬取；留空则不限制
+  cutoff_date: "2024-06-30"             # 截止日期（YYYY-MM-DD），早于此日期的视频将停止爬取；留空则不限制
 
 # 关键词过滤（可选）
 # input 文件可在第 4 列填写 keyword_filter（profile 名称），例如：filter1

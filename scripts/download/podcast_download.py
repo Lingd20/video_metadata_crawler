@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """通用播客/音频平台下载模块。
 
-覆盖 SBS、Spotify/Anchor、喜马拉雅、小宇宙FM、Podbean、SoundOn、
-Buzzsprout、Omny、Acast、SoundCloud、RTHK、荔枝FM 等平台，
-以及各种 CDN 直链（.mp3/.m4a）。大部分由 yt-dlp generic extractor 或
-平台特定 extractor 自动处理。
+直接下载音频，并从 Excel 表格写入 metadata.jsonl；不再调用 yt-dlp -j
+单条抓取元数据。URL→archive key 的解析逻辑（用于 yt-dlp --download-archive
+断点续跑）完整保留。
 """
 
 from __future__ import annotations
@@ -22,19 +21,16 @@ from yt_dlp_common import (
     YtDlpAudioOptions,
     YtDlpRuntimeOptions,
     build_yt_dlp_cmd,
-    fetch_single_video_metadata,
     filter_urls_by_archive,
     list_audio_files,
     load_download_archive,
-    parse_yt_dlp_date,
     run_yt_dlp_and_log,
     run_yt_dlp_parallel,
     write_metadata_entry,
 )
 
 # ---------------------------------------------------------------------------
-# archive key 提取：尽力从 URL 中抽取与 yt-dlp 一致的 (extractor, id)，
-# 无法识别时返回 None，交给 yt-dlp --download-archive 兜底。
+# archive key 提取（保留，与 yt-dlp --download-archive 断点对齐）
 # ---------------------------------------------------------------------------
 
 _SBS_SLUG_RE = re.compile(r"/podcast-episode/[^/]+/([a-z0-9]+)$")
@@ -54,12 +50,10 @@ _SBS_AUDIO_URL_RE = re.compile(
 
 
 def _url_md5_short(url: str) -> str:
-    """URL 的 MD5 前 12 位，用于无法提取原生 ID 时做 fallback key。"""
     return hashlib.md5(url.strip().encode()).hexdigest()[:12]
 
 
 def _extract_direct_audio_id(url: str) -> str | None:
-    """从直链 URL 路径中提取不含扩展名的文件名作为 ID。"""
     parsed = urlparse(unquote(url.split("?")[0]))
     name = Path(parsed.path).stem
     if name and len(name) > 3:
@@ -201,6 +195,7 @@ def download_podcast(
     task_name: str,
     parallel: int = 1,
     metadata_path: Path | None = None,
+    metadata_by_url: dict[str, dict] | None = None,
 ):
     archive_keys = load_download_archive(archive_path)
     pending, skipped = filter_urls_by_archive(urls, archive_keys, url_to_archive_key)
@@ -278,8 +273,8 @@ def download_podcast(
         "pending_count": len(pending),
         "skipped_by_archive": skipped,
     }
-    audio_ext = "wav"
-    output_tpl = "unsubtitled/podcast/audios/%(id)s.%(ext)s"
+    audio_ext = (audio.audio_format or "wav").lower()
+    output_tpl = "podcast/audio/%(id)s.%(ext)s"
 
     before_files = list_audio_files(out_dir, audio_ext)
 
@@ -335,6 +330,7 @@ def download_podcast(
 
         renamed = 0
         t0_ren = time.time()
+        renamed_files: list[Path] = []
         for fp in new_files:
             old_vid = fp.stem
             src_url = url_by_old_vid.get(old_vid, "")
@@ -352,7 +348,9 @@ def download_podcast(
                 except Exception:
                     # 重命名失败就保持原样
                     new_vid = old_vid
+            renamed_files.append(fp)
             url_by_new_vid[new_vid] = src_url
+        new_files = renamed_files
 
         if renamed:
             print(
@@ -360,43 +358,63 @@ def download_podcast(
                 f"个（耗时 {int(time.time() - t0_ren)}s）"
             )
 
-    # Write metadata.jsonl for newly downloaded files
-    if metadata_path:
-        if new_files:
-            print(f"[podcast] 获取 {len(new_files)} 条新音频的元数据…")
-            for i, fp in enumerate(new_files):
-                vid = fp.stem
-                url = url_by_new_vid.get(vid, "")
+    if not metadata_path:
+        return
 
-                info = fetch_single_video_metadata(url or "", cookies_path, timeout_sec=30) if url else None
-                if info:
-                    upload_date = parse_yt_dlp_date(info.get("upload_date"))
-                    cats = info.get("categories") or []
-                    category = ", ".join(cats) if isinstance(cats, list) else str(cats or "")
-                    if not category:
-                        category = info.get("category") or None
-                    channel = info.get("channel") or info.get("uploader") or None
-                    duration = info.get("duration") or 0
-                else:
-                    upload_date = None
-                    category = None
-                    channel = None
-                    duration = 0
+    if not new_files:
+        return
 
-                write_metadata_entry(
-                    metadata_path=metadata_path,
-                    video_id=vid,
-                    duration_s=float(duration),
-                    platform="podcast",
-                    url=url or "",
-                    channel=channel,
-                    category=category or None,
-                    publish_date=upload_date,
-                )
-                if (i + 1) % 20 == 0:
-                    print(f"  [podcast] metadata 进度: {i + 1}/{len(new_files)}")
+    # 构造 archive_id -> (url, meta) 与 直链 id -> (url, meta) 两张反查表
+    key_index: dict[tuple[str, str], tuple[str, dict]] = {}
+    direct_id_index: dict[str, tuple[str, dict]] = {}
+    for u, meta in (metadata_by_url or {}).items():
+        key = url_to_archive_key(u)
+        if key is not None:
+            key_index[key] = (u, meta)
+            if key[0] == "podcast_direct":
+                direct_id_index[key[1]] = (u, meta)
 
-            print(f"  [podcast] metadata.jsonl 写入 {len(new_files)} 条")
+    written = 0
+    for fp in new_files:
+        try:
+            fp.relative_to(out_dir / "podcast" / "audio")
+        except ValueError:
+            continue
+        vid = fp.stem
+        matched_url = ""
+        matched_meta: dict = {}
+
+        # 1) 按 (extractor, id) 精确命中
+        for (_ext, key_id), (u, meta) in key_index.items():
+            if key_id == vid:
+                matched_url = u
+                matched_meta = meta
+                break
+
+        # 2) 直链文件名兜底（有时 id 会被 normalized）
+        if not matched_url and vid in direct_id_index:
+            matched_url, matched_meta = direct_id_index[vid]
+
+        # 3) 子串命中（原脚本策略：`vid in u`）
+        if not matched_url:
+            for u, meta in (metadata_by_url or {}).items():
+                if vid and vid in u:
+                    matched_url = u
+                    matched_meta = meta
+                    break
+
+        metainfo = dict(matched_meta.get("metainfo") or {})
+        write_metadata_entry(
+            metadata_path,
+            video_id=vid,
+            platform="podcast",
+            url=matched_url,
+            duration_s=matched_meta.get("duration_s"),
+            metainfo_extra=metainfo,
+        )
+        written += 1
+
+    print(f"  [podcast] metadata.jsonl 写入 {written} 条")
 
 
 if __name__ == "__main__":

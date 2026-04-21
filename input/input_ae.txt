@@ -1,10 +1,28 @@
-برنامج قلبي اطمأن | الموسم 	youtube_playlist	https://www.youtube.com/playlist?list=PLzZol22jG6Oeal6priaLn9vUzfQ3l6ZaI
-ARABIC | #ABtalks Chapters	youtube_playlist	https://www.youtube.com/playlist?list=PLDk8Qa5B23vGUjyEKYoDvdYa678-uLKwJ
-Noor Stars	youtube_channel	https://www.youtube.com/@noorstars
-Om sayf	youtube_channel	https://www.youtube.com/@hdeel
-مصطفى GAME OVER	youtube_channel	https://www.youtube.com/@mustafago
-Bessan Ismail - بيسان اسماعيل	youtube_channel	https://www.youtube.com/@bessanismail
-Ghaith Marwan غيث مروان	youtube_channel	https://www.youtube.com/@ghaithmarwan
-Majd Alzakout	youtube_channel	https://www.youtube.com/@majd_alzakout
-AlArabiya	youtube_channel	https://www.youtube.com/@alarabiya
-Spacetoon	youtube_channel	https://www.youtube.com/SpacetoonYouTube
+برنامج قلبي اطمأن | الموسم 	youtube_playlist	https://www.youtube.com/playlist?list=PLzZol22jG6Oeal6priaLn9vUzfQ3l6ZaI	none
+ARABIC | #ABtalks Chapters	youtube_playlist	https://www.youtube.com/playlist?list=PLDk8Qa5B23vGUjyEKYoDvdYa678-uLKwJ	none
+Noor Stars	youtube_channel	https://www.youtube.com/@noorstars	none
+Om sayf	youtube_channel	https://www.youtube.com/@hdeel	none
+مصطفى GAME OVER	youtube_channel	https://www.youtube.com/@mustafago	none
+Bessan Ismail - بيسان اسماعيل	youtube_channel	https://www.youtube.com/@bessanismail	none
+Ghaith Marwan غيث مروان	youtube_channel	https://www.youtube.com/@ghaithmarwan	none
+Majd Alzakout	youtube_channel	https://www.youtube.com/@majd_alzakout	none
+AlArabiya	youtube_channel	https://www.youtube.com/@alarabiya	none
+Spacetoon	youtube_channel	https://www.youtube.com/SpacetoonYouTube	none
+bs_arabic	youtube_channel	https://www.youtube.com/@bs_arabic	none
+sultanfayzo	youtube_channel	https://www.youtube.com/@sultanfayzo	none
+abdelkafytube	youtube_channel	https://www.youtube.com/@abdelkafytube	none
+SherinAmara	youtube_channel	https://www.youtube.com/@sherinamara	none
+ArabianFairyTales	youtube_channel	https://www.youtube.com/@arabianfairytales	none
+Sewar&Massa	youtube_channel	https://www.youtube.com/@sewarmassa	none
+WooHooArabic	youtube_channel	https://www.youtube.com/@woohoo_arabic	none
+NewMedia_Lift	youtube_channel	https://www.youtube.com/@newmedia_life	none
+SaraPopFitBestTrainer	youtube_channel	https://www.youtube.com/@sarapopfitbesttrainer	none
+AnasElshayib	youtube_channel	https://www.youtube.com/@anaselshayib	none
+baneenstars	youtube_channel	https://www.youtube.com/@baneenstars	none
+KEDOO-AR	youtube_channel	https://www.youtube.com/@kedoo-ar	none
+vaniamaniaarabic	youtube_channel	https://www.youtube.com/@vaniamaniaarabic	none
+NickelodeonArabia	youtube_channel	https://www.youtube.com/@nickelodeonarabia	none
+fekrtany	youtube_channel	https://www.youtube.com/@fekrtany	none
+husamkwaik	youtube_channel	https://www.youtube.com/@husamkwaik	none
+Weyyakcom	youtube_channel	https://www.youtube.com/@weyyakcom	none
+natgeoabudhabime	youtube_channel	https://www.youtube.com/@natgeoabudhabime	none
