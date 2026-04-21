@@ -166,6 +166,7 @@ class YouTubeCrawler:
             )
         positive_keywords = [str(k).strip().lower() for k in positive_keywords if str(k).strip()]
         negative_keywords = [str(k).strip().lower() for k in negative_keywords if str(k).strip()]
+        apply_keyword_filter = bool(profile and (positive_keywords or negative_keywords))
 
         def _accept_by_keywords(text_title: str, text_desc: str) -> bool:
             if not positive_keywords and not negative_keywords:
@@ -292,6 +293,7 @@ class YouTubeCrawler:
                     while seg_pos < len(seg_batch) and not skipped_by_user and not cutoff_reached:
                         chunk = seg_batch[seg_pos:seg_pos + seg_batch_size]
                         seg_pos += len(chunk)
+                        seg_base = seg_pos - len(chunk)
                         if not chunk:
                             break
 
@@ -347,13 +349,14 @@ class YouTubeCrawler:
                                 fail_counts[sk_url] = fail_counts.get(sk_url, 0) + 1
                                 c = fail_counts[sk_url]
                                 seg_batch_fail += 1
+                                seen = seg_base + (seg_ok + seg_filtered + seg_dup + seg_batch_fail)
                                 if c >= MAX_URL_FETCH_FAILURES:
                                     if sk_url not in failed_set:
                                         failed_urls.append(sk_url)
                                         failed_set.add(sk_url)
-                                    logger.warning("  [%d/%d] %s — 拉取失败(已放弃 %d/%d)", len(videos), seg_total, sk_url, c, MAX_URL_FETCH_FAILURES)
+                                    logger.warning("  [%d/%d] %s — 拉取失败(已放弃 %d/%d)", seen, seg_total, sk_url, c, MAX_URL_FETCH_FAILURES)
                                 else:
-                                    logger.warning("  [%d/%d] %s — 拉取失败(%d/%d)", len(videos), seg_total, sk_url, c, MAX_URL_FETCH_FAILURES)
+                                    logger.warning("  [%d/%d] %s — 拉取失败(%d/%d)", seen, seg_total, sk_url, c, MAX_URL_FETCH_FAILURES)
 
                         if seg_proc.stdout:
                             while True:
@@ -398,24 +401,31 @@ class YouTubeCrawler:
 
                                 fail_counts.pop(watch_url, None)
 
-                                title_for_filter, desc_for_filter = _extract_filter_title_desc(info)
-                                if not _accept_by_keywords(title_for_filter, desc_for_filter):
-                                    seg_filtered += 1
-                                    if watch_url not in failed_set:
-                                        failed_urls.append(watch_url)
-                                        failed_set.add(watch_url)
-                                    if watch_url not in filtered_set:
-                                        filtered_urls.append(watch_url)
-                                    filtered_set.add(watch_url)
-                                    logger.info(
-                                        "  [%d/%d] %s — 关键词过滤", len(videos), seg_total, _title,
-                                    )
-                                    continue
+                                if apply_keyword_filter:
+                                    title_for_filter, desc_for_filter = _extract_filter_title_desc(info)
+                                    if not _accept_by_keywords(title_for_filter, desc_for_filter):
+                                        seg_filtered += 1
+                                        if watch_url not in failed_set:
+                                            failed_urls.append(watch_url)
+                                            failed_set.add(watch_url)
+                                        if watch_url not in filtered_set:
+                                            filtered_urls.append(watch_url)
+                                        filtered_set.add(watch_url)
+                                        logger.info(
+                                            "  [%d/%d] %s — 关键词过滤",
+                                            seg_base + (seg_ok + seg_filtered + seg_dup + seg_batch_fail),
+                                            seg_total,
+                                            _title,
+                                        )
+                                        continue
 
                                 video = self._parse(info, source_name, etype)
                                 if video is None:
                                     logger.warning(
-                                        "  [%d/%d] %s — 解析失败", len(videos), seg_total, _title,
+                                        "  [%d/%d] %s — 解析失败",
+                                        (seg_ok + seg_filtered + seg_dup + seg_batch_fail),
+                                        seg_total,
+                                        _title,
                                     )
                                     continue
                                 canon = video["url"]
@@ -423,7 +433,10 @@ class YouTubeCrawler:
                                     seg_dup += 1
                                     existing_urls.add(watch_url)
                                     logger.info(
-                                        "  [%d/%d] %s — 已存在，跳过", len(videos), seg_total, _title,
+                                        "  [%d/%d] %s — 已存在，跳过",
+                                        seg_base + (seg_ok + seg_filtered + seg_dup + seg_batch_fail),
+                                        seg_total,
+                                        _title,
                                     )
                                     continue
 
@@ -433,12 +446,13 @@ class YouTubeCrawler:
                                 new_count += 1
                                 seg_ok += 1
 
-                                pct = len(videos) / seg_total * 100 if seg_total else 0
+                                seen = seg_base + (seg_ok + seg_filtered + seg_dup + seg_batch_fail)
+                                pct = seen / seg_total * 100 if seg_total else 0
                                 dur_s = video.get("duration", 0) or 0
                                 dur_str = f"{dur_s // 3600}h{(dur_s % 3600) // 60:02d}m" if dur_s >= 3600 else f"{dur_s // 60}m{dur_s % 60:02d}s"
                                 logger.info(
                                     "  [%d/%d] (%.1f%%) %s  [%s]",
-                                    len(videos), seg_total, pct, _title, dur_str,
+                                    seen, seg_total, pct, _title, dur_str,
                                 )
 
                                 if new_count >= save_interval:
@@ -470,11 +484,12 @@ class YouTubeCrawler:
 
                         _seg_flush_failures(len(chunk))
 
+                        seen = min(seg_total, seg_base + len(chunk))
                         logger.info(
-                            "[%s] %s — batch 完成: 新增 %d, 过滤 %d, 重复 %d, 失败 %d | 累计 %d/%d (%.1f%%)",
+                            "[%s] %s — batch 完成: 新增 %d, 过滤 %d, 重复 %d, 失败 %d | 进度 %d/%d (%.1f%%)",
                             etype, source_name, seg_ok, seg_filtered, seg_dup, seg_batch_fail,
-                            len(videos), seg_total,
-                            len(videos) / seg_total * 100 if seg_total else 0,
+                            seen, seg_total,
+                            seen / seg_total * 100 if seg_total else 0,
                         )
 
                         _save_partial_segment()
@@ -700,13 +715,14 @@ class YouTubeCrawler:
                         fail_counts[sk_url] = fail_counts.get(sk_url, 0) + 1
                         c = fail_counts[sk_url]
                         batch_fail += 1
+                        seen = (batch_ok + batch_filtered + batch_dup + batch_fail)
                         if c >= MAX_URL_FETCH_FAILURES:
                             if sk_url not in failed_set:
                                 failed_urls.append(sk_url)
                                 failed_set.add(sk_url)
-                            logger.warning("  [%d/%d] %s — 拉取失败(已放弃 %d/%d)", len(videos), total_pending, sk_url, c, MAX_URL_FETCH_FAILURES)
+                            logger.warning("  [%d/%d] %s — 拉取失败(已放弃 %d/%d)", seen, total_pending, sk_url, c, MAX_URL_FETCH_FAILURES)
                         else:
-                            logger.warning("  [%d/%d] %s — 拉取失败(%d/%d)", len(videos), total_pending, sk_url, c, MAX_URL_FETCH_FAILURES)
+                            logger.warning("  [%d/%d] %s — 拉取失败(%d/%d)", seen, total_pending, sk_url, c, MAX_URL_FETCH_FAILURES)
 
                 if proc.stdout:
                     while True:
@@ -751,23 +767,24 @@ class YouTubeCrawler:
 
                         fail_counts.pop(watch_url, None)
 
-                        title_for_filter, desc_for_filter = _extract_filter_title_desc(info)
-                        if not _accept_by_keywords(title_for_filter, desc_for_filter):
-                            batch_filtered += 1
-                            if watch_url not in failed_set:
-                                failed_urls.append(watch_url)
-                                failed_set.add(watch_url)
-                            if watch_url not in filtered_set:
-                                filtered_urls.append(watch_url)
-                            filtered_set.add(watch_url)
-                            canon = info.get("webpage_url") or info.get("url")
-                            if isinstance(canon, str) and canon and canon not in filtered_set:
-                                filtered_urls.append(canon)
-                                filtered_set.add(canon)
-                            logger.info(
-                                "  [%d/%d] %s — 关键词过滤", len(videos), total_pending, _title,
-                            )
-                            continue
+                        if apply_keyword_filter:
+                            title_for_filter, desc_for_filter = _extract_filter_title_desc(info)
+                            if not _accept_by_keywords(title_for_filter, desc_for_filter):
+                                batch_filtered += 1
+                                if watch_url not in failed_set:
+                                    failed_urls.append(watch_url)
+                                    failed_set.add(watch_url)
+                                if watch_url not in filtered_set:
+                                    filtered_urls.append(watch_url)
+                                filtered_set.add(watch_url)
+                                canon = info.get("webpage_url") or info.get("url")
+                                if isinstance(canon, str) and canon and canon not in filtered_set:
+                                    filtered_urls.append(canon)
+                                    filtered_set.add(canon)
+                                logger.info(
+                                    "  [%d/%d] %s — 关键词过滤", len(videos), total_pending, _title,
+                                )
+                                continue
 
                         video = self._parse(info, source_name, etype)
                         if video is None:

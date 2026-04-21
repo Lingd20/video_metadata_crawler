@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import json
-import re
 import subprocess
 import sys
 import time
 import wave
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from threading import Lock
@@ -327,71 +326,27 @@ def run_yt_dlp_parallel(
 
 def write_metadata_entry(
     metadata_path: Path,
+    *,
     video_id: str,
-    duration_s: float,
     platform: str,
     url: str,
-    channel: str | None,
-    category: str | None,
-    publish_date: str | None,
-    has_manual_subs: bool = False,
+    duration_s: float | None = None,
+    metainfo_extra: dict | None = None,
 ):
-    """Append one entry to metadata.jsonl."""
-    entry = {
-        "id": video_id,
-        "duration_s": round(duration_s, 2),
-        "has_manual_subs": has_manual_subs,
-        "metainfo": {
-            "platform": platform,
-            "url": url,
-            "channel": channel,
-            "category": category,
-            "publish_date": publish_date,
-        },
-    }
+    """Append one entry to metadata.jsonl.
+
+    metainfo 字段直接由调用方从 Excel 行映射而来（不再做 yt-dlp -j 二次抓取）。
+    `platform` 和 `url` 会覆盖 metainfo_extra 中同名字段，保证权威。
+    """
+    metainfo: dict = {"platform": platform, "url": url}
+    if metainfo_extra:
+        for k, v in metainfo_extra.items():
+            if k in ("platform", "url"):
+                continue
+            metainfo[k] = v
+
+    entry: dict = {"id": video_id}
+    if duration_s is not None:
+        entry["duration_s"] = round(float(duration_s), 2)
+    entry["metainfo"] = metainfo
     write_jsonl(metadata_path, entry)
-
-
-def parse_yt_dlp_date(upload_date: str | None) -> str | None:
-    """Convert yt-dlp upload_date (YYYYMMDD) to YYYY/MM/DD."""
-    if not upload_date or len(upload_date) < 8:
-        return None
-    try:
-        return f"{upload_date[:4]}/{upload_date[4:6]}/{upload_date[6:8]}"
-    except Exception:
-        return None
-
-
-def fetch_single_video_metadata(
-    url: str,
-    cookies_path: str = "",
-) -> dict | None:
-    """Use yt-dlp -j to fetch metadata for a single URL (any platform)."""
-    cmd = [
-        "yt-dlp",
-        "-j",
-        "--ignore-errors",
-        "--js-runtimes", "node",
-        "--remote-components", "ejs:github",
-        "--no-download",
-    ]
-    if cookies_path:
-        ck = Path(cookies_path)
-        if ck.exists():
-            cmd.extend(["--cookies", str(ck)])
-    cmd.append(url)
-    try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-    except subprocess.TimeoutExpired:
-        return None
-    if not r.stdout.strip():
-        return None
-    for line in r.stdout.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            return json.loads(line)
-        except json.JSONDecodeError:
-            continue
-    return None

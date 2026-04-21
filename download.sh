@@ -14,10 +14,9 @@ DEFAULT_LIMIT=""
 DEFAULT_ARCHIVE=""              # 留空则使用 <任务目录>/downloaded.txt
 DEFAULT_FORMAT=""               # 留空让 yt-dlp 自选
 DEFAULT_PARALLEL="4"           # 并行下载数（同时运行的 yt-dlp 进程数）
-DEFAULT_SLEEP_YOUTUBE=""        # 留空使用 Python 默认 2.0
+DEFAULT_SLEEP_YOUTUBE="5"        # 留空使用 Python 默认 2.0
 DEFAULT_SLEEP_BILIBILI=""       # 留空使用 Python 默认 1.0
 DEFAULT_SLEEP_PODCAST=""        # 留空使用 Python 默认 0.5
-DEFAULT_YOUTUBE_SUB_LANGS="pt"    # 留空：只要有手动字幕就下载；否则按逗号分隔的语种列表下载
 
 usage() {
   cat <<'EOF'
@@ -25,7 +24,6 @@ usage() {
   ./download.sh [excel1.xlsx excel2.xlsx ...] [--excel FILE]... [--excels FILE...]
                [--out DIR] [--task-name NAME]
                [--cookies-bilibili FILE] [--cookies-youtube FILE]
-               [--youtube-sub-langs LANGS]
                [--limit N] [--archive FILE] [--format FMT]
                [-j|--parallel N]
                [--sleep-youtube S] [--sleep-bilibili S] [--sleep-podcast S]
@@ -55,7 +53,6 @@ OUT_DIR="$DEFAULT_OUT_DIR"
 TASK_NAME="$DEFAULT_TASK_NAME"
 COOKIES_BILIBILI="$DEFAULT_BILIBILI_COOKIES_PATH"
 COOKIES_YOUTUBE="$DEFAULT_YOUTUBE_COOKIES_PATH"
-YOUTUBE_SUB_LANGS="$DEFAULT_YOUTUBE_SUB_LANGS"
 LIMIT="$DEFAULT_LIMIT"
 ARCHIVE_PATH="$DEFAULT_ARCHIVE"
 FORMAT="$DEFAULT_FORMAT"
@@ -104,10 +101,6 @@ while [[ $# -gt 0 ]]; do
       ;;
     --cookies-youtube)
       COOKIES_YOUTUBE="$2"
-      shift 2
-      ;;
-    --youtube-sub-langs)
-      YOUTUBE_SUB_LANGS="$2"
       shift 2
       ;;
     --limit)
@@ -165,9 +158,6 @@ if [[ -n "$COOKIES_BILIBILI" ]]; then
 fi
 if [[ -n "$COOKIES_YOUTUBE" ]]; then
   PY_ARGS+=(--cookies-youtube "$COOKIES_YOUTUBE")
-fi
-if [[ -n "$YOUTUBE_SUB_LANGS" ]]; then
-  PY_ARGS+=(--youtube-sub-langs "$YOUTUBE_SUB_LANGS")
 fi
 if [[ -n "$LIMIT" ]]; then
   PY_ARGS+=(--limit "$LIMIT")
