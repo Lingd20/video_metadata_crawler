@@ -57,17 +57,19 @@ def _load_metadata_cache(cache_path: Path) -> dict[str, dict]:
     if not cache_path.exists():
         return {}
     mapping: dict[str, dict] = {}
-    for line in cache_path.read_text(encoding="utf-8", errors="ignore").splitlines():
-        line = (line or "").strip()
-        if not line:
-            continue
-        try:
-            obj = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        vid = obj.get("id")
-        if vid:
-            mapping[str(vid)] = obj
+    # 不能用 read_text().splitlines()：cache 可能很大，Windows 下会直接 MemoryError
+    with cache_path.open("r", encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            line = (line or "").strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            vid = obj.get("id")
+            if vid:
+                mapping[str(vid)] = obj
     return mapping
 
 
