@@ -8,14 +8,17 @@ url_crawl 阶段写入 Excel，本脚本读表写盘即可。
 from __future__ import annotations
 
 import re
+import time
 from pathlib import Path
 
 from yt_dlp_common import (
     YtDlpAudioOptions,
     YtDlpRuntimeOptions,
+    append_failed_urls,
     build_yt_dlp_cmd,
     filter_urls_by_archive,
     list_audio_files,
+    load_failed_urls,
     load_download_archive,
     run_yt_dlp_and_log,
     run_yt_dlp_parallel,
@@ -77,6 +80,15 @@ def download_bilibili(
     archive_keys = archive_keys | _expand_multipart_prefixes(archive_keys)
     pending, skipped = filter_urls_by_archive(urls, archive_keys, url_to_archive_key)
 
+    failed_path = out_dir / "bilibili_failed_urls.txt"
+    failed_urls = load_failed_urls(failed_path)
+    if failed_urls:
+        before = len(pending)
+        pending = [u for u in pending if (u or "").strip() not in failed_urls]
+        skipped_failed = before - len(pending)
+    else:
+        skipped_failed = 0
+
     urls_file = out_dir / "bilibili_urls.txt"
     urls_file.write_text("\n".join(urls) + ("\n" if urls else ""), encoding="utf-8")
     pending_file = out_dir / "bilibili_urls_pending.txt"
@@ -84,7 +96,7 @@ def download_bilibili(
 
     print(
         f"[bilibili] 断点预检: archive {len(archive_keys)} 条，本批 {len(urls)} 条，"
-        f"跳过 {skipped} 条，待下载 {len(pending)} 条。"
+        f"跳过 {skipped} 条，失败跳过 {skipped_failed} 条，待下载 {len(pending)} 条。"
     )
     if not pending:
         return
@@ -139,11 +151,28 @@ def download_bilibili(
             audio_ext=audio_ext,
         )
 
+    after_files = list_audio_files(out_dir, audio_ext)
+    new_files = sorted(after_files - before_files)
+    # 统计本轮仍未进入 archive 的 URL，写入 failed 列表，避免下次运行反复刷同样错误
+    try:
+        after_archive = load_download_archive(archive_path)
+        still_failed: list[str] = []
+        for u in pending:
+            key = url_to_archive_key(u)
+            if key is None:
+                # 无法提取 key：不自动判定失败，避免误伤
+                continue
+            if (key[0].lower(), key[1]) not in after_archive:
+                still_failed.append(u)
+        wrote = append_failed_urls(failed_path, still_failed)
+        if wrote:
+            print(f"[bilibili] 本轮记录失败 URL: {wrote} 条 → {failed_path}")
+    except Exception:
+        pass
+
     if not metadata_path:
         return
 
-    after_files = list_audio_files(out_dir, audio_ext)
-    new_files = sorted(after_files - before_files)
     if not new_files:
         return
 

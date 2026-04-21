@@ -4,7 +4,7 @@ set -euo pipefail
 # -----------------------------
 # 预定义默认参数（可被命令行覆盖）
 # -----------------------------
-DEFAULT_EXCEL="results/pt_0415.xlsx"
+DEFAULT_EXCEL="results/yue_0415.xlsx"
 # DEFAULT_OUT_DIR="downloads"
 DEFAULT_OUT_DIR="F:/download"
 DEFAULT_TASK_NAME=""             # 留空：单 xlsx 用文件名推导（去掉 _metadata）；多 xlsx 默认 merged

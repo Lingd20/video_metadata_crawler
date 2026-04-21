@@ -9,7 +9,11 @@
 from __future__ import annotations
 
 import hashlib
+import html
 import re
+import time
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
@@ -39,6 +43,11 @@ _XIMALAYA_TRACK_RE = re.compile(r"ximalaya\.com/sound/(\d+)")
 _XIAOYUZHOU_EP_RE = re.compile(r"xiaoyuzhoufm\.com/episode/([a-f0-9]+)")
 _SOUNDON_EP_RE = re.compile(r"player\.soundon\.fm/p/[^/]+/episodes/([a-f0-9-]+)")
 
+_SBS_AUDIO_URL_RE = re.compile(
+    r"""https?://[^\s"'<>]+?\.(?:mp3|m4a|aac|ogg|wav|m3u8)(?:\?[^\s"'<>]*)?""",
+    re.IGNORECASE,
+)
+
 
 def _url_md5_short(url: str) -> str:
     return hashlib.md5(url.strip().encode()).hexdigest()[:12]
@@ -50,6 +59,63 @@ def _extract_direct_audio_id(url: str) -> str | None:
     if name and len(name) > 3:
         return name
     return None
+
+
+def _short_podcast_id(seed: str) -> str:
+    """生成尽可能短且稳定的文件 id（12 位 md5）。"""
+    s = (seed or "").strip()
+    if not s:
+        s = "podcast"
+    return "p" + hashlib.md5(s.encode("utf-8")).hexdigest()[:12]
+
+
+def _resolve_sbs_audio_url(url: str) -> str | None:
+    """对 SBS podcast-episode 页面做兜底解析，尝试从 HTML 中提取直链音频 URL。
+
+    说明：yt-dlp 对该类页面有时会报 Unsupported URL；直链通常可被 generic extractor 稳定下载。
+    """
+    u = (url or "").strip()
+    if not u:
+        return None
+    ul = u.lower()
+    if "sbs.com.au" not in ul or "/podcast-episode/" not in ul:
+        return None
+
+    req = urllib.request.Request(
+        u,
+        headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        },
+        method="GET",
+    )
+    # timeout 主要用于避免网络握手/下载卡住拖慢整轮任务
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            raw = resp.read()
+    except Exception:
+        return None
+
+    # 尽量用 UTF-8 解码；失败则忽略非法字符，保证 regex 可跑
+    page_html = raw.decode("utf-8", errors="ignore")
+    candidates = _SBS_AUDIO_URL_RE.findall(page_html)
+    if not candidates:
+        return None
+
+    # 优先选择 mp3，其次 m4a/aac，再其次 m3u8
+    def _score(x: str) -> tuple[int, int]:
+        xl = x.lower()
+        if ".mp3" in xl:
+            return (0, len(x))
+        if ".m4a" in xl or ".aac" in xl:
+            return (1, len(x))
+        if ".m3u8" in xl:
+            return (2, len(x))
+        return (3, len(x))
+
+    best = sorted(dict.fromkeys(candidates), key=_score)[0]
+    return html.unescape(best)
 
 
 def url_to_archive_key(url: str) -> tuple[str, str] | None:
@@ -134,6 +200,58 @@ def download_podcast(
     archive_keys = load_download_archive(archive_path)
     pending, skipped = filter_urls_by_archive(urls, archive_keys, url_to_archive_key)
 
+    # Podcast 统一输出 WAV（无论传入 audio_format 是什么）
+    audio = YtDlpAudioOptions(
+        audio_format="wav",
+        audio_sample_rate=int(audio.audio_sample_rate),
+        audio_sample_fmt=str(audio.audio_sample_fmt),
+        audio_channels=int(audio.audio_channels),
+        format=str(audio.format or ""),
+        flatten_output=bool(audio.flatten_output),
+    )
+
+    # SBS 页面兜底：把不稳定的页面 URL 替换成可直接下载的音频直链
+    # 这样既能绕过 Unsupported URL，也能让 archive 用 podcast_direct 的 id 进行后续跳过
+    if pending:
+        # 通用预解析（并发）：未来新增其它平台解析器时也天然并发。
+        # 注意：解析函数内部必须先做域名/路径判断，避免对所有 URL 发起网络请求。
+        def _resolve_podcast_direct_url(u: str) -> str | None:
+            # SBS
+            direct = _resolve_sbs_audio_url(u)
+            if direct:
+                return direct
+            return None
+
+        # 只对“可能需要网络解析”的 URL 进入并发队列；其余 URL 保持原样。
+        # 目前只有 SBS podcast-episode 页面会走网络解析；后续可扩展更多条件。
+        need_idxs: list[int] = []
+        for i, u in enumerate(pending):
+            ul = (u or "").lower()
+            if "sbs.com.au" in ul and "/podcast-episode/" in ul:
+                need_idxs.append(i)
+
+        if need_idxs:
+            print(f"[podcast] 预解析音频直链: {len(need_idxs)} 条（并发）…")
+            rewrite_hit = 0
+            done = 0
+            with ThreadPoolExecutor(max_workers=min(8, len(need_idxs))) as pool:
+                fut_map = {pool.submit(_resolve_podcast_direct_url, pending[i]): i for i in need_idxs}
+                for fut in as_completed(fut_map):
+                    i = fut_map[fut]
+                    try:
+                        direct = fut.result(timeout=12)
+                    except Exception:
+                        direct = None
+                    if direct and direct != pending[i]:
+                        pending[i] = direct
+                        rewrite_hit += 1
+                    done += 1
+                    if done % 10 == 0 or done == len(need_idxs):
+                        print(
+                            f"  [podcast] 预解析进度: {done}/{len(need_idxs)} "
+                            f"(rewritten={rewrite_hit})"
+                        )
+
     urls_file = out_dir / "podcast_urls.txt"
     urls_file.write_text("\n".join(urls) + ("\n" if urls else ""), encoding="utf-8")
     pending_file = out_dir / "podcast_urls_pending.txt"
@@ -193,11 +311,56 @@ def download_podcast(
             audio_ext=audio_ext,
         )
 
+    # 下载完成后：把本轮新增的音频文件重命名为短 id（避免过长文件名/路径问题）
+    # 同时尽力保留 new_id -> source_url 的映射，供 metadata 写入使用。
+    after_files = list_audio_files(out_dir, audio_ext)
+    new_files = sorted(after_files - before_files)
+    url_by_new_vid: dict[str, str] = {}
+    if new_files:
+        # 先用旧文件名匹配 pending URL（尽力而为）
+        url_by_old_vid: dict[str, str] = {}
+        for fp in new_files:
+            old_vid = fp.stem
+            matched = ""
+            for u in pending:
+                if old_vid and old_vid in u:
+                    matched = u
+                    break
+            url_by_old_vid[old_vid] = matched
+
+        renamed = 0
+        t0_ren = time.time()
+        renamed_files: list[Path] = []
+        for fp in new_files:
+            old_vid = fp.stem
+            src_url = url_by_old_vid.get(old_vid, "")
+            new_vid = _short_podcast_id(src_url or old_vid or fp.name)
+            dst = fp.with_name(f"{new_vid}.{fp.suffix.lstrip('.')}")
+            # 避免碰撞：极低概率，但仍防御性处理
+            if dst.exists() and dst.resolve() != fp.resolve():
+                new_vid = _short_podcast_id(f"{src_url}|{old_vid}|{fp.name}")
+                dst = fp.with_name(f"{new_vid}.{fp.suffix.lstrip('.')}")
+            if dst.resolve() != fp.resolve():
+                try:
+                    fp.replace(dst)
+                    renamed += 1
+                    fp = dst
+                except Exception:
+                    # 重命名失败就保持原样
+                    new_vid = old_vid
+            renamed_files.append(fp)
+            url_by_new_vid[new_vid] = src_url
+        new_files = renamed_files
+
+        if renamed:
+            print(
+                f"[podcast] 重命名新音频: {renamed}/{len(new_files)} "
+                f"个（耗时 {int(time.time() - t0_ren)}s）"
+            )
+
     if not metadata_path:
         return
 
-    after_files = list_audio_files(out_dir, audio_ext)
-    new_files = sorted(after_files - before_files)
     if not new_files:
         return
 
