@@ -4,7 +4,7 @@ set -euo pipefail
 # -----------------------------
 # 预定义默认参数（可被命令行覆盖）
 # -----------------------------
-DEFAULT_EXCEL="results/pt_0415.xlsx"
+DEFAULT_EXCEL="../metadata/yue/yue_0424.xlsx"
 # DEFAULT_OUT_DIR="downloads"
 DEFAULT_OUT_DIR="F:/download"
 DEFAULT_TASK_NAME=""             # 留空：单 xlsx 用文件名推导（去掉 _metadata）；多 xlsx 默认 merged
@@ -14,7 +14,7 @@ DEFAULT_LIMIT=""
 DEFAULT_ARCHIVE=""              # 留空则使用 <任务目录>/downloaded.txt
 DEFAULT_FORMAT=""               # 留空让 yt-dlp 自选
 DEFAULT_PARALLEL="4"           # 并行下载数（同时运行的 yt-dlp 进程数）
-DEFAULT_SLEEP_YOUTUBE="10"        # 留空使用 Python 默认 2.0
+DEFAULT_SLEEP_YOUTUBE="5"        # 留空使用 Python 默认 2.0
 DEFAULT_SLEEP_BILIBILI=""       # 留空使用 Python 默认 1.0
 DEFAULT_SLEEP_PODCAST=""        # 留空使用 Python 默认 0.5
 
