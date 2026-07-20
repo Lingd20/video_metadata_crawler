@@ -2,12 +2,12 @@
 # 从 Bilibili / YouTube 爬取指定频道或播放列表的视频元数据
 
 # 输入文件路径（TSV 格式，每行: name\ttype\tid）
-input_file: "input/input_yue.txt"
+input_file: "input/input_ae_2.txt"
 
 # 输出配置
 output:
   output_dir: "results"
-  filename: "yue_metadata.xlsx"
+  filename: "ae_2_metadata.xlsx"
 
 # Cookies 文件路径（可选，留空或注释掉则不使用）
 cookies:
@@ -24,10 +24,10 @@ bilibili:
 
 # YouTube 爬取配置
 youtube:
-  sleep_interval: 3          # 请求间隔（秒）
+  sleep_interval: 5          # 请求间隔（秒）
   error_sleep_interval: 10   # 错误后等待时间（秒）
   metadata_batch_size: 50    # 每次获取的视频数量
-  cutoff_date: "2024-06-30"             # 截止日期（YYYY-MM-DD），早于此日期的视频将停止爬取；留空则不限制
+  cutoff_date: "2024-12-30"             # 截止日期（YYYY-MM-DD），早于此日期的视频将停止爬取；留空则不限制
 
 # 关键词过滤（可选）
 # input 文件可在第 4 列填写 keyword_filter（profile 名称），例如：filter1
@@ -46,3 +46,11 @@ keyword_filters:
 checkpoint:
   checkpoint_dir: "checkpoints"
   save_interval: 50          # 每获取 N 个新视频保存一次 checkpoint
+
+# 手动字幕单阶段流水线（scripts/subtitled_search_download/run.py）可选配置
+# subtitled_download:
+#   output_dir: "downloads"       # 下载根目录
+#   task_name: ""                 # 留空则用 input 文件名
+#   sub_langs: ""                 # 字幕语种，留空=all
+#   sleep_interval: 2.0
+#   output_excel: ""              # 可选：导出已下载视频的 Excel

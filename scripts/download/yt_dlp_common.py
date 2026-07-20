@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 import time
 import wave
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from threading import Lock
+import tempfile
 
 _print_lock = Lock()
 
@@ -360,6 +363,7 @@ def write_metadata_entry(
     url: str,
     duration_s: float | None = None,
     metainfo_extra: dict | None = None,
+    has_manual_subs: bool | None = None,
 ):
     """Append one entry to metadata.jsonl.
 
@@ -376,51 +380,156 @@ def write_metadata_entry(
     entry: dict = {"id": video_id}
     if duration_s is not None:
         entry["duration_s"] = round(float(duration_s), 2)
+    if has_manual_subs is not None:
+        entry["has_manual_subs"] = bool(has_manual_subs)
     entry["metainfo"] = metainfo
     write_jsonl(metadata_path, entry)
 
 
-def parse_yt_dlp_date(upload_date: str | None) -> str | None:
-    """Convert yt-dlp upload_date (YYYYMMDD) to YYYY/MM/DD."""
-    if not upload_date or len(upload_date) < 8:
-        return None
-    try:
-        return f"{upload_date[:4]}/{upload_date[4:6]}/{upload_date[6:8]}"
-    except Exception:
-        return None
+# ---------------------------------------------------------------------------
+# Subtitle mode helpers
+# ---------------------------------------------------------------------------
+
+# 1) audio_only  : 不检查字幕，全部只下音频
+# 2) manual_only : 只下载有手动字幕的（音频+字幕）
+# 3) mixed       : 有手动字幕 → 音频+字幕；否则只下音频
+SUBTITLE_MODES = ("audio_only", "manual_only", "mixed")
 
 
-def fetch_single_video_metadata(
-    url: str,
+def normalize_subtitle_mode(mode: str | None) -> str:
+    m = (mode or "audio_only").strip().lower()
+    aliases = {
+        "1": "audio_only",
+        "audio": "audio_only",
+        "none": "audio_only",
+        "2": "manual_only",
+        "manual": "manual_only",
+        "subs_only": "manual_only",
+        "3": "mixed",
+        "auto": "mixed",
+    }
+    m = aliases.get(m, m)
+    if m not in SUBTITLE_MODES:
+        raise SystemExit(
+            f"未知 subtitle_mode={mode!r}，可选: audio_only | manual_only | mixed"
+        )
+    return m
+
+
+# B 站把弹幕也放进 subtitles["danmaku"]，不算手动字幕
+_NON_MANUAL_SUB_KEYS = frozenset({"danmaku"})
+
+
+def has_manual_subtitles(info: dict | None) -> bool:
+    """yt-dlp info 中是否存在手动字幕（不含 automatic_captions / danmaku）。"""
+    if not info:
+        return False
+    subs = info.get("subtitles")
+    if not isinstance(subs, dict) or not subs:
+        return False
+    return any(k for k in subs if str(k).lower() not in _NON_MANUAL_SUB_KEYS)
+
+
+def batch_probe_manual_subtitles(
+    urls: list[str],
     cookies_path: str = "",
-    timeout_sec: int = 120,
-) -> dict | None:
-    """Use yt-dlp -j to fetch metadata for a single URL (any platform)."""
-    cmd = [
-        "yt-dlp",
-        "-j",
-        "--ignore-errors",
-        "--js-runtimes", "node",
-        "--remote-components", "ejs:github",
-        "--no-download",
-    ]
-    if cookies_path:
-        ck = Path(cookies_path)
-        if ck.exists():
-            cmd.extend(["--cookies", str(ck)])
-    cmd.append(url)
-    try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=int(timeout_sec))
-    except subprocess.TimeoutExpired:
-        return None
-    if not r.stdout.strip():
-        return None
-    for line in r.stdout.splitlines():
-        line = line.strip()
-        if not line:
-            continue
+    *,
+    batch_size: int = 50,
+) -> dict[str, bool]:
+    """批量探测 URL 是否有手动字幕。
+
+    返回 {url: has_manual_subs}。探测失败的 URL 记为 False（视为无字幕）。
+
+    注意：B 站 extractor 在纯 `-j --skip-download` 时经常不填充 subtitles；
+    需加 `--write-subs` 才会把手动字幕写入 JSON（配合 --skip-download 不会落盘）。
+    """
+    result: dict[str, bool] = {u: False for u in urls if (u or "").strip()}
+    if not result:
+        return {}
+
+    pending = list(result.keys())
+    bs = max(1, int(batch_size or 50))
+
+    for i in range(0, len(pending), bs):
+        chunk = pending[i : i + bs]
+        tmp_path: str | None = None
         try:
-            return json.loads(line)
-        except json.JSONDecodeError:
-            continue
-    return None
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", suffix=".txt", delete=False,
+            ) as tf:
+                for u in chunk:
+                    tf.write(u + "\n")
+                tmp_path = tf.name
+
+            # 注意：
+            # - B 站需 --write-subs 才会在 -j 中填充 subtitles（配合 --skip-download 不落盘）
+            # - 探测阶段不加 --js-runtimes（部分 yt-dlp 版本不支持，会导致整批失败）
+            cmd = [
+                "yt-dlp",
+                "--ignore-config",
+                "-j",
+                "--skip-download",
+                "--write-subs",
+                "--no-write-auto-subs",
+                "--sub-langs", "all",
+                "--ignore-errors",
+                "--ignore-no-formats",
+                "--extractor-args", "youtube:player_client=android",
+                "--extractor-args", "youtube:skip=live,members_only",
+                "-a", tmp_path,
+            ]
+            if cookies_path:
+                ck = Path(cookies_path)
+                if ck.exists():
+                    cmd.extend(["--cookies", str(ck)])
+
+            # 建 id/url 反查：优先 webpage_url 精确匹配，否则用 id 子串匹配
+            id_to_urls: dict[str, list[str]] = {}
+            for u in chunk:
+                # youtube 11-char / bilibili BV
+                m = re.search(
+                    r"(?:[?&]v=|youtu\.be/|youtube\.com/shorts/)([a-zA-Z0-9_-]{11})(?:[&/?#]|$)",
+                    u,
+                )
+                if m:
+                    id_to_urls.setdefault(m.group(1), []).append(u)
+                    continue
+                m = re.search(r"(BV[a-zA-Z0-9]+)", u, re.I)
+                if m:
+                    id_to_urls.setdefault(m.group(1), []).append(u)
+
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=7200)
+            for line in (proc.stdout or "").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    info = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                flag = has_manual_subtitles(info)
+                webpage = info.get("webpage_url") or info.get("original_url") or ""
+                vid = str(info.get("id") or "")
+                matched = False
+                if webpage and webpage in result:
+                    result[webpage] = flag
+                    matched = True
+                if not matched and vid and vid in id_to_urls:
+                    for u in id_to_urls[vid]:
+                        result[u] = flag
+                    matched = True
+                if not matched and vid:
+                    for u in chunk:
+                        if vid in u:
+                            result[u] = flag
+        except Exception as e:
+            print(f"  [subtitle-probe] batch 失败: {e}")
+        finally:
+            if tmp_path:
+                with suppress(Exception):
+                    Path(tmp_path).unlink(missing_ok=True)
+
+        done = min(i + bs, len(pending))
+        print(f"  [subtitle-probe] 进度 {done}/{len(pending)}")
+
+    return result
