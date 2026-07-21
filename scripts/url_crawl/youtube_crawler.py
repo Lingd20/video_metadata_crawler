@@ -19,11 +19,15 @@ import logging
 import re
 import subprocess
 import threading
+from collections import deque
+from typing import Callable, Literal
 
 from datetime import datetime
 from urllib.parse import parse_qs, urlparse
 
 from utils import CheckpointManager
+
+PostMetadataHook = Callable[[dict, str, dict], Literal["add", "skip", "stop", "retry"]]
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +113,7 @@ class YouTubeCrawler:
         save_interval: int = 50,
         skip_event: threading.Event | None = None,
         refresh_pending_urls: bool = False,
+        post_metadata_hook: PostMetadataHook | None = None,
     ):
         """爬取一个 youtube_channel 或 youtube_playlist，返回视频字典列表。"""
         etype = entry["type"]
@@ -136,6 +141,8 @@ class YouTubeCrawler:
 
         filtered_urls: list[str] = list(cp.get("youtube_filtered_urls") or [])
         filtered_set = set(filtered_urls)
+        skipped_urls: list[str] = list(cp.get("youtube_skipped_urls") or [])
+        skipped_set = set(skipped_urls)
 
         keyword_filter_name = entry.get("keyword_filter")
         profile = None
@@ -186,6 +193,21 @@ class YouTubeCrawler:
             desc_for_filter = info.get("description") or info.get("full_description") or ""
             return title_for_filter, desc_for_filter
 
+        def _apply_post_metadata_hook(info: dict, watch_url: str, video: dict) -> str:
+            if post_metadata_hook is None:
+                return "add"
+            action = post_metadata_hook(info, watch_url, video)
+            if action not in ("add", "skip", "stop", "retry"):
+                return "add"
+            if action == "retry":
+                return "retry"
+            if action == "skip":
+                if watch_url not in skipped_set:
+                    skipped_urls.append(watch_url)
+                    skipped_set.add(watch_url)
+                existing_urls.add(watch_url)
+            return action
+
         # youtube_channel：特别大的频道采用分段拉取 pending list + 获取 metadata
         youtube_pending_urls_done = cp.get("youtube_pending_urls_done", None)
         youtube_list_cursor = int(cp.get("youtube_list_cursor") or 0)
@@ -211,7 +233,7 @@ class YouTubeCrawler:
                 youtube_pending_urls_done = bool(youtube_pending_urls_done) if youtube_pending_urls_done is not None else False
 
             def _url_resolved(u: str) -> bool:
-                return u in existing_urls or u in failed_set or u in filtered_set
+                return u in existing_urls or u in failed_set or u in filtered_set or u in skipped_set
 
             def _save_partial_segment():
                 cp_mgr.save(
@@ -222,6 +244,7 @@ class YouTubeCrawler:
                         "youtube_failed_urls": failed_urls,
                         "youtube_url_fail_counts": fail_counts,
                         "youtube_filtered_urls": filtered_urls,
+                        "youtube_skipped_urls": skipped_urls,
                         "youtube_pending_urls_done": youtube_pending_urls_done,
                         "youtube_list_cursor": youtube_list_cursor,
                         "done": False,
@@ -261,6 +284,7 @@ class YouTubeCrawler:
                                     "youtube_failed_urls": failed_urls,
                                     "youtube_url_fail_counts": fail_counts,
                                     "youtube_filtered_urls": filtered_urls,
+                                    "youtube_skipped_urls": skipped_urls,
                                     "youtube_pending_urls_done": True,
                                     "youtube_list_cursor": youtube_list_cursor,
                                     "done": (not skipped_by_user and True),
@@ -276,8 +300,9 @@ class YouTubeCrawler:
                                 "youtube_pending_urls": pending_urls,
                                 "youtube_failed_urls": failed_urls,
                                 "youtube_url_fail_counts": fail_counts,
-                                "youtube_filtered_urls": filtered_urls,
-                                "youtube_pending_urls_done": False,
+                        "youtube_filtered_urls": filtered_urls,
+                        "youtube_skipped_urls": skipped_urls,
+                        "youtube_pending_urls_done": False,
                                 "youtube_list_cursor": youtube_list_cursor,
                                 "done": False,
                             },
@@ -286,7 +311,7 @@ class YouTubeCrawler:
                     seg_batch_size = self.metadata_batch_size if self.metadata_batch_size > 0 else 50
                     seg_batch: list[str] = [
                         u for u in pending_urls
-                        if u not in existing_urls and u not in failed_set and u not in filtered_set
+                        if u not in existing_urls and u not in failed_set and u not in filtered_set and u not in skipped_set
                     ]
 
                     seg_pos = 0
@@ -319,7 +344,8 @@ class YouTubeCrawler:
 
                         logger.info("[%s] %s — 批量拉取 %d 条视频元数据…", etype, source_name, len(chunk))
                         seg_cmd = self._build_metadata_cmd(chunk)
-                        seg_stderr: list[str] = []
+                        # 实时输出 stderr，且只保留少量尾部用于排查
+                        seg_stderr = deque(maxlen=200)
 
                         seg_proc = subprocess.Popen(
                             seg_cmd,
@@ -333,6 +359,9 @@ class YouTubeCrawler:
                             if seg_proc.stderr:
                                 for _l in seg_proc.stderr:
                                     seg_stderr.append(_l)
+                                    s = _l.strip()
+                                    if s:
+                                        logger.warning("  [yt-dlp:stderr] %s", s)
 
                         seg_err_t = threading.Thread(target=_read_seg_err, daemon=True)
                         seg_err_t.start()
@@ -428,6 +457,26 @@ class YouTubeCrawler:
                                         _title,
                                     )
                                     continue
+                                hook_action = _apply_post_metadata_hook(info, watch_url, video)
+                                if hook_action == "stop":
+                                    cutoff_reached = True
+                                    break
+                                if hook_action == "retry":
+                                    logger.warning(
+                                        "  [%d/%d] %s — hook 请求重试",
+                                        seg_base + (seg_ok + seg_filtered + seg_dup + seg_batch_fail),
+                                        seg_total,
+                                        _title,
+                                    )
+                                    continue
+                                if hook_action == "skip":
+                                    logger.info(
+                                        "  [%d/%d] %s — 已由 hook 跳过",
+                                        seg_base + (seg_ok + seg_filtered + seg_dup + seg_batch_fail),
+                                        seg_total,
+                                        _title,
+                                    )
+                                    continue
                                 canon = video["url"]
                                 if canon in existing_urls:
                                     seg_dup += 1
@@ -508,6 +557,7 @@ class YouTubeCrawler:
                                 "youtube_failed_urls": failed_urls,
                                 "youtube_url_fail_counts": fail_counts,
                                 "youtube_filtered_urls": filtered_urls,
+                                "youtube_skipped_urls": skipped_urls,
                                 "youtube_pending_urls_done": True,
                                 "youtube_list_cursor": youtube_list_cursor,
                                 "done": True,
@@ -531,8 +581,9 @@ class YouTubeCrawler:
                             "youtube_pending_urls": [],
                             "youtube_failed_urls": failed_urls,
                             "youtube_url_fail_counts": fail_counts,
-                            "youtube_filtered_urls": filtered_urls,
-                            "youtube_pending_urls_done": False,
+                        "youtube_filtered_urls": filtered_urls,
+                        "youtube_skipped_urls": skipped_urls,
+                        "youtube_pending_urls_done": False,
                             "youtube_list_cursor": youtube_list_cursor,
                             "done": False,
                         },
@@ -574,6 +625,7 @@ class YouTubeCrawler:
                         "youtube_failed_urls": failed_urls,
                         "youtube_url_fail_counts": fail_counts,
                         "youtube_filtered_urls": filtered_urls,
+                        "youtube_skipped_urls": skipped_urls,
                         "done": False,
                     },
                 )
@@ -588,6 +640,7 @@ class YouTubeCrawler:
                         "youtube_failed_urls": failed_urls,
                         "youtube_url_fail_counts": fail_counts,
                         "youtube_filtered_urls": filtered_urls,
+                        "youtube_skipped_urls": skipped_urls,
                         "done": True,
                     },
                 )
@@ -601,6 +654,7 @@ class YouTubeCrawler:
                     "youtube_failed_urls": failed_urls,
                     "youtube_url_fail_counts": fail_counts,
                     "youtube_filtered_urls": filtered_urls,
+                    "youtube_skipped_urls": skipped_urls,
                     "done": False,
                 },
             )
@@ -637,6 +691,7 @@ class YouTubeCrawler:
                     "youtube_failed_urls": failed_urls,
                     "youtube_url_fail_counts": fail_counts,
                     "youtube_filtered_urls": filtered_urls,
+                    "youtube_skipped_urls": skipped_urls,
                     "done": False,
                 },
             )
@@ -655,7 +710,7 @@ class YouTubeCrawler:
                 while pos < len(pending_urls) and len(batch) < batch_size:
                     watch_url = pending_urls[pos]
                     pos += 1
-                    if watch_url in existing_urls or watch_url in failed_set or watch_url in filtered_set:
+                    if watch_url in existing_urls or watch_url in failed_set or watch_url in filtered_set or watch_url in skipped_set:
                         continue
                     batch.append(watch_url)
 
@@ -684,7 +739,8 @@ class YouTubeCrawler:
                 total_pending = len(pending_urls)
                 logger.info("[%s] %s — 批量拉取 %d 条视频元数据…", etype, source_name, len(batch))
                 cmd = self._build_metadata_cmd(batch)
-                stderr_lines: list[str] = []
+                # 实时输出 stderr，且只保留少量尾部用于排查
+                stderr_lines = deque(maxlen=200)
 
                 proc = subprocess.Popen(
                     cmd,
@@ -698,6 +754,9 @@ class YouTubeCrawler:
                     if proc.stderr:
                         for line in proc.stderr:
                             stderr_lines.append(line)
+                            s = line.strip()
+                            if s:
+                                logger.warning("  [yt-dlp:stderr] %s", s)
 
                 err_thread = threading.Thread(target=_read_err, daemon=True)
                 err_thread.start()
@@ -792,6 +851,20 @@ class YouTubeCrawler:
                                 "  [%d/%d] %s — 解析失败", len(videos), total_pending, _title,
                             )
                             continue
+                        hook_action = _apply_post_metadata_hook(info, watch_url, video)
+                        if hook_action == "stop":
+                            cutoff_reached = True
+                            break
+                        if hook_action == "retry":
+                            logger.warning(
+                                "  [%d/%d] %s — hook 请求重试", len(videos), total_pending, _title,
+                            )
+                            continue
+                        if hook_action == "skip":
+                            logger.info(
+                                "  [%d/%d] %s — 已由 hook 跳过", len(videos), total_pending, _title,
+                            )
+                            continue
                         canon = video["url"]
                         if canon in existing_urls:
                             batch_dup += 1
@@ -860,7 +933,7 @@ class YouTubeCrawler:
             raise
 
         def _url_resolved(u: str) -> bool:
-            return u in existing_urls or u in failed_set or u in filtered_set
+            return u in existing_urls or u in failed_set or u in filtered_set or u in skipped_set
 
         all_list_in_videos = len(pending_urls) == 0 or all(_url_resolved(u) for u in pending_urls)
         done = (not skipped_by_user) and (cutoff_reached or all_list_in_videos)
@@ -872,6 +945,7 @@ class YouTubeCrawler:
                 "youtube_failed_urls": failed_urls,
                 "youtube_url_fail_counts": fail_counts,
                 "youtube_filtered_urls": filtered_urls,
+                "youtube_skipped_urls": skipped_urls,
                 "done": done,
             },
         )
@@ -1081,9 +1155,15 @@ class YouTubeCrawler:
         """Build yt-dlp command for streaming metadata of multiple URLs."""
         cmd = [
             "yt-dlp",
+            # 避免用户全局 yt-dlp 配置（比如 -f/后处理）影响“仅抓元数据”模式
+            "--ignore-config",
             "--match-filter", "availability = public",
             "-j",
+            "--skip-download",
             "--ignore-errors",
+            # 没有可用 formats 时不要直接报错退出（只抓元数据时应尽量继续）
+            "--js-runtimes", "node",
+            "--ignore-no-formats",
             "--remote-components", "ejs:github",
             "--extractor-args", "youtube:player_client=android",
             "--extractor-args", "youtube:skip=live,members_only",

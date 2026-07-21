@@ -26,3 +26,19 @@ fekrtany	youtube_channel	https://www.youtube.com/@fekrtany	none
 husamkwaik	youtube_channel	https://www.youtube.com/@husamkwaik	none
 Weyyakcom	youtube_channel	https://www.youtube.com/@weyyakcom	none
 natgeoabudhabime	youtube_channel	https://www.youtube.com/@natgeoabudhabime	none
+asklaftananlamazarabic	youtube_channel	https://www.youtube.com/@asklaftananlamazarabic	none
+learnwithzakaria	youtube_channel	https://www.youtube.com/@learnwithzakaria	none
+MeeraStars	youtube_channel	https://www.youtube.com/@meerastars
+nastyaartemmiaae	youtube_channel	https://www.youtube.com/@nastyaartemmiaae
+mo.moussalli	youtube_channel	https://www.youtube.com/@mo.moussalli
+KhalidAIAmeri	youtube_channel	https://www.youtube.com/@khalidalameri
+HussamRulaFamily	youtube_channel	https://www.youtube.com/@hussamrulafamily
+super_sisters	youtube_channel	https://www.youtube.com/@super_sisters
+naserhekaia	youtube_channel	https://www.youtube.com/@naserhekaia
+SofiaPlay	youtube_channel	https://www.youtube.com/@sofiaplay
+almashhadmedia	youtube_channel	https://www.youtube.com/@almashhadmedia
+omardizer	youtube_channel	https://www.youtube.com/@omardizer
+zeealwantv	youtube_channel	https://www.youtube.com/@zeealwantv
+habibafamily	youtube_channel	https://www.youtube.com/@habibafamily
+jamaloukimag	youtube_channel	https://www.youtube.com/@jamaloukimag
+3aj	youtube_channel	https://www.youtube.com/@3aj

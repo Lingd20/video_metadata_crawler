@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""从一个或多个 Excel 读取 URL + metainfo，按平台分发给 yt-dlp 下载音频。
+"""从一个或多个 Excel 读取 URL + metainfo，按平台分发给 yt-dlp 下载。
 
-下载阶段不再做 yt-dlp -j 二次抓取、不再区分有/无字幕。metainfo（频道、
-标题、发布时间等）直接来自 url_crawl 阶段写入 Excel 的字段。
+subtitle_mode:
+  audio_only  — 不检查字幕，全部只下音频（默认）
+  manual_only — 只下载有手动字幕的（音频+字幕）
+  mixed       — 有手动字幕 → 音频+字幕；否则只下音频
 """
 
 from __future__ import annotations
@@ -15,7 +17,13 @@ from excel_urls import extract_rows_from_excels
 from platform_detect import split_urls_by_platform
 from podcast_download import download_podcast
 from youtube_download import download_youtube
-from yt_dlp_common import PLATFORM_SLEEP_DEFAULTS, YtDlpAudioOptions, YtDlpRuntimeOptions
+from yt_dlp_common import (
+    PLATFORM_SLEEP_DEFAULTS,
+    SUBTITLE_MODES,
+    YtDlpAudioOptions,
+    YtDlpRuntimeOptions,
+    normalize_subtitle_mode,
+)
 
 
 def _default_task_name(excel_paths: list[str]) -> str:
@@ -26,7 +34,7 @@ def _default_task_name(excel_paths: list[str]) -> str:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="从 Excel 读取 URL + metainfo，用 yt-dlp 下载音频（按平台分发）")
+    parser = argparse.ArgumentParser(description="从 Excel 读取 URL + metainfo，用 yt-dlp 下载（按平台分发）")
     parser.add_argument(
         "--excel",
         action="append",
@@ -47,6 +55,21 @@ def main():
     )
     parser.add_argument("--cookies-bilibili", default="", help="B 站 cookies.txt（可选）")
     parser.add_argument("--cookies-youtube", default="", help="YouTube cookies.txt（可选）")
+    parser.add_argument(
+        "--subtitle-mode",
+        default="audio_only",
+        choices=list(SUBTITLE_MODES),
+        help=(
+            "字幕模式: audio_only=全部只下音频; "
+            "manual_only=只下有手动字幕的(音频+字幕); "
+            "mixed=有字幕下音频+字幕,无字幕只下音频（默认 audio_only）"
+        ),
+    )
+    parser.add_argument(
+        "--sub-langs",
+        default="",
+        help="手动字幕语种（逗号分隔，如 pt,en；留空表示 all）。仅 manual_only/mixed 生效。",
+    )
     parser.add_argument("--limit", type=int, default=0, help="只处理前 N 条（调试用，0 表示不限制）")
     parser.add_argument("--archive", default="", help="download-archive 文件路径（默认: <任务目录>/downloaded.txt）")
     parser.add_argument("--format", default="", help="yt-dlp -f 格式选择（默认留空让 yt-dlp 自选）")
@@ -74,6 +97,8 @@ def main():
     if not excel_paths:
         raise SystemExit("请至少指定一个 Excel：--excel a.xlsx 或 --excels a.xlsx b.xlsx ...")
 
+    subtitle_mode = normalize_subtitle_mode(args.subtitle_mode)
+
     urls, metadata_by_url = extract_rows_from_excels(excel_paths)
     if args.limit and args.limit > 0:
         urls = urls[: args.limit]
@@ -90,7 +115,7 @@ def main():
     urls_file.write_text("\n".join(urls) + "\n", encoding="utf-8")
     print(
         f"已写入合并去重后的全量 URL: {urls_file}（{len(urls)} 条，"
-        f"metainfo {len(metadata_by_url)} 条）"
+        f"metainfo {len(metadata_by_url)} 条）| subtitle_mode={subtitle_mode}"
     )
 
     archive_path = Path(args.archive) if args.archive else (out_dir / "downloaded.txt")
@@ -137,6 +162,8 @@ def main():
             parallel=args.parallel,
             metadata_path=metadata_path,
             metadata_by_url=metadata_by_url,
+            subtitle_mode=subtitle_mode,
+            sub_langs=args.sub_langs,
         )
     if by_platform.get("youtube"):
         download_youtube(
@@ -151,6 +178,8 @@ def main():
             parallel=args.parallel,
             metadata_path=metadata_path,
             metadata_by_url=metadata_by_url,
+            subtitle_mode=subtitle_mode,
+            sub_langs=args.sub_langs,
         )
     if by_platform.get("podcast"):
         download_podcast(

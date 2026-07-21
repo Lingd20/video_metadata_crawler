@@ -4,9 +4,9 @@ set -euo pipefail
 # -----------------------------
 # 预定义默认参数（可被命令行覆盖）
 # -----------------------------
-DEFAULT_EXCEL="../metadata/yue/yue_0424.xlsx"
+DEFAULT_EXCEL="results/pt_0417.xlsx"
 # DEFAULT_OUT_DIR="downloads"
-DEFAULT_OUT_DIR="F:/download"
+DEFAULT_OUT_DIR="G:/download"
 DEFAULT_TASK_NAME=""             # 留空：单 xlsx 用文件名推导（去掉 _metadata）；多 xlsx 默认 merged
 DEFAULT_BILIBILI_COOKIES_PATH="config/bilibili_cookies.txt"
 DEFAULT_YOUTUBE_COOKIES_PATH="config/youtube_cookies.txt"
@@ -14,9 +14,11 @@ DEFAULT_LIMIT=""
 DEFAULT_ARCHIVE=""              # 留空则使用 <任务目录>/downloaded.txt
 DEFAULT_FORMAT=""               # 留空让 yt-dlp 自选
 DEFAULT_PARALLEL="4"           # 并行下载数（同时运行的 yt-dlp 进程数）
-DEFAULT_SLEEP_YOUTUBE="5"        # 留空使用 Python 默认 2.0
+DEFAULT_SLEEP_YOUTUBE="10"        # 留空使用 Python 默认 2.0
 DEFAULT_SLEEP_BILIBILI=""       # 留空使用 Python 默认 1.0
 DEFAULT_SLEEP_PODCAST=""        # 留空使用 Python 默认 0.5
+DEFAULT_SUBTITLE_MODE="audio_only"  # audio_only | manual_only | mixed
+DEFAULT_SUB_LANGS=""            # 留空=all；仅 manual_only/mixed 生效
 
 usage() {
   cat <<'EOF'
@@ -24,6 +26,7 @@ usage() {
   ./download.sh [excel1.xlsx excel2.xlsx ...] [--excel FILE]... [--excels FILE...]
                [--out DIR] [--task-name NAME]
                [--cookies-bilibili FILE] [--cookies-youtube FILE]
+               [--subtitle-mode MODE] [--sub-langs LANGS]
                [--limit N] [--archive FILE] [--format FMT]
                [-j|--parallel N]
                [--sleep-youtube S] [--sleep-bilibili S] [--sleep-podcast S]
@@ -31,6 +34,10 @@ usage() {
 说明:
   - 推荐直接使用 Python 脚本：python scripts/download/download_all.py --excel <a.xlsx> --excel <b.xlsx> ...
   - 本脚本是对 Python 脚本的薄封装，支持多个 xlsx 合并去重 URL。
+  - --subtitle-mode:
+      audio_only   不检查字幕，全部只下音频（默认）
+      manual_only  只下载有手动字幕的（音频+字幕）
+      mixed        有手动字幕 → 音频+字幕；否则只下音频
 
 示例:
   ./download.sh                      # 使用默认 results/yue_metadata.xlsx
@@ -40,6 +47,7 @@ usage() {
   ./download.sh results/yue_metadata.xlsx --task-name input_yue
   ./download.sh results/yue_metadata.xlsx --cookies-bilibili config/bilibili_cookies.txt
   ./download.sh results/yue_metadata.xlsx --limit 10
+  ./download.sh results/ae_3_meatadata.xlsx --subtitle-mode mixed --sub-langs ar,en
 EOF
 }
 
@@ -60,6 +68,8 @@ PARALLEL="$DEFAULT_PARALLEL"
 SLEEP_YOUTUBE="$DEFAULT_SLEEP_YOUTUBE"
 SLEEP_BILIBILI="$DEFAULT_SLEEP_BILIBILI"
 SLEEP_PODCAST="$DEFAULT_SLEEP_PODCAST"
+SUBTITLE_MODE="$DEFAULT_SUBTITLE_MODE"
+SUB_LANGS="$DEFAULT_SUB_LANGS"
 
 EXCELS=()
 
@@ -101,6 +111,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --cookies-youtube)
       COOKIES_YOUTUBE="$2"
+      shift 2
+      ;;
+    --subtitle-mode)
+      SUBTITLE_MODE="$2"
+      shift 2
+      ;;
+    --sub-langs)
+      SUB_LANGS="$2"
       shift 2
       ;;
     --limit)
@@ -158,6 +176,12 @@ if [[ -n "$COOKIES_BILIBILI" ]]; then
 fi
 if [[ -n "$COOKIES_YOUTUBE" ]]; then
   PY_ARGS+=(--cookies-youtube "$COOKIES_YOUTUBE")
+fi
+if [[ -n "$SUBTITLE_MODE" ]]; then
+  PY_ARGS+=(--subtitle-mode "$SUBTITLE_MODE")
+fi
+if [[ -n "$SUB_LANGS" ]]; then
+  PY_ARGS+=(--sub-langs "$SUB_LANGS")
 fi
 if [[ -n "$LIMIT" ]]; then
   PY_ARGS+=(--limit "$LIMIT")
