@@ -2,12 +2,12 @@
 # 从 Bilibili / YouTube 爬取指定频道或播放列表的视频元数据
 
 # 输入文件路径（TSV 格式，每行: name\ttype\tid）
-input_file: "input/input_ae_2.txt"
+input_file: "input/input_pt_0826.txt"
 
 # 输出配置
 output:
   output_dir: "results"
-  filename: "ae_2_metadata.xlsx"
+  filename: "pt_0826_subtitle_metadata.xlsx"
 
 # Cookies 文件路径（可选，留空或注释掉则不使用）
 cookies:
@@ -27,7 +27,17 @@ youtube:
   sleep_interval: 5          # 请求间隔（秒）
   error_sleep_interval: 10   # 错误后等待时间（秒）
   metadata_batch_size: 50    # 每次获取的视频数量
-  cutoff_date: "2024-12-30"             # 截止日期（YYYY-MM-DD），早于此日期的视频将停止爬取；留空则不限制
+  cutoff_date: "2026-05-09"             # 截止日期（YYYY-MM-DD），早于此日期的视频将停止爬取；留空则不限制
+
+subtitled_download:
+  output_dir: "downloads"          # 或你的盘符路径，如 G:/download/pt
+  task_name: "pt_0826_manual"      # 可选；留空则用 input 文件名
+  # 传给 yt-dlp --sub-langs，且探测阶段也会按此过滤：
+  # 必须存在匹配的手动字幕才会下载（live_chat / 自动字幕不算）
+  # 常见葡语 tag：pt / pt-BR / pt-PT / portuguese
+  # 注意用 pt.*（点星），不要写成 pt*（在正则里只表示多个 t）
+  sub_langs: "pt.*,(?i)portuguese,(?i)portugues"
+  sleep_interval: 5.0
 
 # 关键词过滤（可选）
 # input 文件可在第 4 列填写 keyword_filter（profile 名称），例如：filter1

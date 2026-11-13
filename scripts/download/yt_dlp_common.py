@@ -98,6 +98,64 @@ def append_failed_urls(path: Path, urls: list[str]) -> int:
     return len(new)
 
 
+def load_subtitle_probe_cache(
+    probed_path: Path,
+    manual_path: Path,
+) -> dict[str, bool]:
+    """读取字幕探测缓存。
+
+    probed_path: 已成功探测过的 URL（每行一个）
+    manual_path: 其中有手动字幕的 URL（每行一个）
+    返回 {url: has_manual_subs}。
+    """
+    probed = load_failed_urls(probed_path)
+    if not probed:
+        return {}
+    manual = load_failed_urls(manual_path)
+    return {u: (u in manual) for u in probed}
+
+
+def append_subtitle_probe_cache(
+    probed_path: Path,
+    manual_path: Path,
+    flags: dict[str, bool],
+) -> tuple[int, int]:
+    """追加成功探测结果到缓存。
+
+    只写入本次给出的 flags；探测失败的 URL 不应传入，以便下次重试。
+    返回 (新增已探测条数, 新增有字幕条数)。
+    """
+    if not flags:
+        return 0, 0
+    probed_path.parent.mkdir(parents=True, exist_ok=True)
+    manual_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with _print_lock:
+        existing_probed = load_failed_urls(probed_path)
+        existing_manual = load_failed_urls(manual_path)
+        new_probed: list[str] = []
+        new_manual: list[str] = []
+        for url, has_subs in flags.items():
+            u = (url or "").strip()
+            if not u:
+                continue
+            if u not in existing_probed:
+                new_probed.append(u)
+                existing_probed.add(u)
+            if has_subs and u not in existing_manual:
+                new_manual.append(u)
+                existing_manual.add(u)
+        if new_probed:
+            with probed_path.open("a", encoding="utf-8") as f:
+                for u in new_probed:
+                    f.write(u + "\n")
+        if new_manual:
+            with manual_path.open("a", encoding="utf-8") as f:
+                for u in new_manual:
+                    f.write(u + "\n")
+    return len(new_probed), len(new_manual)
+
+
 def filter_urls_by_archive(
     urls: list[str],
     archive: set[tuple[str, str]],
@@ -416,18 +474,154 @@ def normalize_subtitle_mode(mode: str | None) -> str:
     return m
 
 
-# B 站把弹幕也放进 subtitles["danmaku"]，不算手动字幕
-_NON_MANUAL_SUB_KEYS = frozenset({"danmaku"})
+# 不算「手动字幕」的 subtitles key（B 站弹幕 / YouTube 直播聊天等）
+_NON_MANUAL_SUB_KEYS = frozenset({"danmaku", "live_chat"})
 
 
-def has_manual_subtitles(info: dict | None) -> bool:
-    """yt-dlp info 中是否存在手动字幕（不含 automatic_captions / danmaku）。"""
+def parse_sub_lang_patterns(sub_langs: str | None) -> list[str] | None:
+    """解析 --sub-langs / config.sub_langs。
+
+    返回:
+      None  — 未限制语种（空 / all），任意真实手动字幕即通过
+      [..]  — 正则列表（与 yt-dlp --sub-langs 相同：逗号分隔）
+    """
+    raw = (sub_langs or "").strip()
+    if not raw or raw.lower() == "all":
+        return None
+    parts = [p.strip() for p in raw.split(",") if p.strip() and not p.strip().startswith("-")]
+    return parts or None
+
+
+def _lang_matches_patterns(lang: str, patterns: list[str]) -> bool:
+    for pat in patterns:
+        try:
+            if re.fullmatch(pat, lang):
+                return True
+        except re.error:
+            if pat.lower() == lang.lower():
+                return True
+    return False
+
+
+def manual_subtitle_langs(info: dict | None) -> list[str]:
+    """返回 info 中真实手动字幕语种（排除 automatic_captions / danmaku / live_chat）。"""
     if not info:
-        return False
+        return []
     subs = info.get("subtitles")
     if not isinstance(subs, dict) or not subs:
+        return []
+    return [
+        str(k)
+        for k in subs
+        if str(k).lower() not in _NON_MANUAL_SUB_KEYS
+    ]
+
+
+def has_manual_subtitles(info: dict | None, sub_langs: str | None = "") -> bool:
+    """是否存在符合要求的手动字幕。
+
+    sub_langs 为空或 all：任意真实手动字幕即 True。
+    否则须至少有一个语种匹配 sub_langs 中的正则（如 pt.*）。
+    """
+    langs = manual_subtitle_langs(info)
+    if not langs:
         return False
-    return any(k for k in subs if str(k).lower() not in _NON_MANUAL_SUB_KEYS)
+    patterns = parse_sub_lang_patterns(sub_langs)
+    if patterns is None:
+        return True
+    return any(_lang_matches_patterns(lang, patterns) for lang in langs)
+
+
+def _probe_chunk_manual_subtitles(
+    chunk: list[str],
+    cookies_path: str = "",
+    sub_langs: str = "",
+) -> dict[str, bool]:
+    """探测一小批 URL 是否有符合 sub_langs 的手动字幕。
+
+    只返回成功拿到 info 的 URL；失败/限流的 URL 不出现在结果中。
+    """
+    found: dict[str, bool] = {}
+    if not chunk:
+        return found
+
+    chunk_set = set(chunk)
+    tmp_path: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", suffix=".txt", delete=False,
+        ) as tf:
+            for u in chunk:
+                tf.write(u + "\n")
+            tmp_path = tf.name
+
+        # 注意：
+        # - B 站需 --write-subs 才会在 -j 中填充 subtitles（配合 --skip-download 不落盘）
+        # - 探测阶段不加 --js-runtimes（部分 yt-dlp 版本不支持，会导致整批失败）
+        # - --sub-langs all：先拉全量字幕清单，再在 Python 侧按 sub_langs 过滤
+        cmd = [
+            "yt-dlp",
+            "--ignore-config",
+            "-j",
+            "--skip-download",
+            "--write-subs",
+            "--no-write-auto-subs",
+            "--sub-langs", "all",
+            "--ignore-errors",
+            "--ignore-no-formats",
+            "--extractor-args", "youtube:player_client=android",
+            "--extractor-args", "youtube:skip=live,members_only",
+            "-a", tmp_path,
+        ]
+        if cookies_path:
+            ck = Path(cookies_path)
+            if ck.exists():
+                cmd.extend(["--cookies", str(ck)])
+
+        id_to_urls: dict[str, list[str]] = {}
+        for u in chunk:
+            m = re.search(
+                r"(?:[?&]v=|youtu\.be/|youtube\.com/shorts/)([a-zA-Z0-9_-]{11})(?:[&/?#]|$)",
+                u,
+            )
+            if m:
+                id_to_urls.setdefault(m.group(1), []).append(u)
+                continue
+            m = re.search(r"(BV[a-zA-Z0-9]+)", u, re.I)
+            if m:
+                id_to_urls.setdefault(m.group(1), []).append(u)
+
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=7200)
+        for line in (proc.stdout or "").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                info = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            flag = has_manual_subtitles(info, sub_langs)
+            webpage = info.get("webpage_url") or info.get("original_url") or ""
+            vid = str(info.get("id") or "")
+            matched = False
+            if webpage and webpage in chunk_set:
+                found[webpage] = flag
+                matched = True
+            if not matched and vid and vid in id_to_urls:
+                for u in id_to_urls[vid]:
+                    found[u] = flag
+                matched = True
+            if not matched and vid:
+                for u in chunk:
+                    if vid in u:
+                        found[u] = flag
+    except Exception as e:
+        _tprint(f"  [subtitle-probe] batch 失败: {e}")
+    finally:
+        if tmp_path:
+            with suppress(Exception):
+                Path(tmp_path).unlink(missing_ok=True)
+    return found
 
 
 def batch_probe_manual_subtitles(
@@ -435,101 +629,63 @@ def batch_probe_manual_subtitles(
     cookies_path: str = "",
     *,
     batch_size: int = 50,
+    parallel: int = 1,
+    sub_langs: str = "",
 ) -> dict[str, bool]:
-    """批量探测 URL 是否有手动字幕。
+    """批量探测 URL 是否有符合 sub_langs 的手动字幕。
 
-    返回 {url: has_manual_subs}。探测失败的 URL 记为 False（视为无字幕）。
+    返回成功探测到的 {url: has_matching_manual_subs}。
+    探测失败（超时/限流/解析失败）的 URL 不出现在结果中，调用方不应把它们写入缓存。
 
     注意：B 站 extractor 在纯 `-j --skip-download` 时经常不填充 subtitles；
-    需加 `--write-subs` 才会把手动字幕写入 JSON（配合 --skip-download 不会落盘）。
+    需加 `--write-subs` 才会把手动字幕写入 JSON（配合 --skip-download 不落盘）。
     """
-    result: dict[str, bool] = {u: False for u in urls if (u or "").strip()}
-    if not result:
+    pending = [u for u in urls if (u or "").strip()]
+    if not pending:
         return {}
 
-    pending = list(result.keys())
+    result: dict[str, bool] = {}
+    n_workers = max(1, min(int(parallel or 1), len(pending)))
     bs = max(1, int(batch_size or 50))
+    # 能塞进 n 个 worker 时按 worker 均分，让 -j 真正并行；
+    # URL 太多时仍按 batch_size 切块，最多同时跑 n 个 yt-dlp。
+    if len(pending) <= n_workers * bs:
+        chunks = [c for c in (pending[i::n_workers] for i in range(n_workers)) if c]
+    else:
+        chunks = [pending[i : i + bs] for i in range(0, len(pending), bs)]
+    n_workers = max(1, min(n_workers, len(chunks)))
+    max_chunk = max(len(c) for c in chunks)
 
-    for i in range(0, len(pending), bs):
-        chunk = pending[i : i + bs]
-        tmp_path: str | None = None
-        try:
-            with tempfile.NamedTemporaryFile(
-                mode="w", encoding="utf-8", suffix=".txt", delete=False,
-            ) as tf:
-                for u in chunk:
-                    tf.write(u + "\n")
-                tmp_path = tf.name
+    patterns = parse_sub_lang_patterns(sub_langs)
+    lang_desc = "all" if patterns is None else ",".join(patterns)
+    if n_workers > 1:
+        _tprint(
+            f"  [subtitle-probe] 并行探测: {len(pending)} 条, "
+            f"{n_workers} 个 worker, 每块最多 {max_chunk} 条 | langs={lang_desc}"
+        )
+    else:
+        _tprint(f"  [subtitle-probe] langs={lang_desc}")
 
-            # 注意：
-            # - B 站需 --write-subs 才会在 -j 中填充 subtitles（配合 --skip-download 不落盘）
-            # - 探测阶段不加 --js-runtimes（部分 yt-dlp 版本不支持，会导致整批失败）
-            cmd = [
-                "yt-dlp",
-                "--ignore-config",
-                "-j",
-                "--skip-download",
-                "--write-subs",
-                "--no-write-auto-subs",
-                "--sub-langs", "all",
-                "--ignore-errors",
-                "--ignore-no-formats",
-                "--extractor-args", "youtube:player_client=android",
-                "--extractor-args", "youtube:skip=live,members_only",
-                "-a", tmp_path,
-            ]
-            if cookies_path:
-                ck = Path(cookies_path)
-                if ck.exists():
-                    cmd.extend(["--cookies", str(ck)])
+    done = 0
+    if n_workers == 1:
+        for chunk in chunks:
+            result.update(_probe_chunk_manual_subtitles(chunk, cookies_path, sub_langs))
+            done += len(chunk)
+            _tprint(f"  [subtitle-probe] 进度 {done}/{len(pending)}")
+        return result
 
-            # 建 id/url 反查：优先 webpage_url 精确匹配，否则用 id 子串匹配
-            id_to_urls: dict[str, list[str]] = {}
-            for u in chunk:
-                # youtube 11-char / bilibili BV
-                m = re.search(
-                    r"(?:[?&]v=|youtu\.be/|youtube\.com/shorts/)([a-zA-Z0-9_-]{11})(?:[&/?#]|$)",
-                    u,
-                )
-                if m:
-                    id_to_urls.setdefault(m.group(1), []).append(u)
-                    continue
-                m = re.search(r"(BV[a-zA-Z0-9]+)", u, re.I)
-                if m:
-                    id_to_urls.setdefault(m.group(1), []).append(u)
-
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=7200)
-            for line in (proc.stdout or "").splitlines():
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    info = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                flag = has_manual_subtitles(info)
-                webpage = info.get("webpage_url") or info.get("original_url") or ""
-                vid = str(info.get("id") or "")
-                matched = False
-                if webpage and webpage in result:
-                    result[webpage] = flag
-                    matched = True
-                if not matched and vid and vid in id_to_urls:
-                    for u in id_to_urls[vid]:
-                        result[u] = flag
-                    matched = True
-                if not matched and vid:
-                    for u in chunk:
-                        if vid in u:
-                            result[u] = flag
-        except Exception as e:
-            print(f"  [subtitle-probe] batch 失败: {e}")
-        finally:
-            if tmp_path:
-                with suppress(Exception):
-                    Path(tmp_path).unlink(missing_ok=True)
-
-        done = min(i + bs, len(pending))
-        print(f"  [subtitle-probe] 进度 {done}/{len(pending)}")
+    with ThreadPoolExecutor(max_workers=n_workers) as pool:
+        futures = {
+            pool.submit(_probe_chunk_manual_subtitles, chunk, cookies_path, sub_langs): chunk
+            for chunk in chunks
+        }
+        for fut in as_completed(futures):
+            chunk = futures[fut]
+            try:
+                result.update(fut.result())
+            except Exception as e:
+                _tprint(f"  [subtitle-probe] batch 失败: {e}")
+            done += len(chunk)
+            _tprint(f"  [subtitle-probe] 进度 {done}/{len(pending)}")
 
     return result

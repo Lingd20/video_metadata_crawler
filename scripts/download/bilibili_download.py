@@ -18,12 +18,14 @@ from yt_dlp_common import (
     YtDlpAudioOptions,
     YtDlpRuntimeOptions,
     append_failed_urls,
+    append_subtitle_probe_cache,
     batch_probe_manual_subtitles,
     build_yt_dlp_cmd,
     filter_urls_by_archive,
     list_audio_files,
     load_download_archive,
     load_failed_urls,
+    load_subtitle_probe_cache,
     normalize_subtitle_mode,
     run_yt_dlp_and_log,
     run_yt_dlp_parallel,
@@ -202,31 +204,13 @@ def download_bilibili(
     bili_fmt = "bestaudio"
 
     flags: dict[str, bool] = {}
-    subtitled: list[str] = []
-    unsubtitled: list[str] = []
-
-    if mode == "audio_only":
-        unsubtitled = list(pending)
-    else:
-        print("[bilibili] 探测手动字幕…")
-        flags = batch_probe_manual_subtitles(pending, cookies_path)
-        for u in pending:
-            if flags.get(u):
-                subtitled.append(u)
-            else:
-                unsubtitled.append(u)
-        print(
-            f"[bilibili] 字幕探测: 有手动字幕 {len(subtitled)} 条, "
-            f"无/未知 {len(unsubtitled)} 条"
-        )
-        if mode == "manual_only":
-            unsubtitled = []
+    subtitled: set[str] = set()
 
     before_files = list_audio_files(out_dir, audio_ext)
 
     if mode == "audio_only":
         _run_group(
-            urls=unsubtitled,
+            urls=pending,
             parallel=parallel,
             out_dir=out_dir,
             archive_path=archive_path,
@@ -241,42 +225,125 @@ def download_bilibili(
             format_override=bili_fmt,
         )
     else:
-        if subtitled:
-            print(f"[bilibili] 下载有字幕组: {len(subtitled)} 条（音频+字幕）")
-            _run_group(
-                urls=subtitled,
-                parallel=parallel,
-                out_dir=out_dir,
-                archive_path=archive_path,
-                cookies_path=cookies_path,
-                audio=audio,
-                runtime=runtime,
-                log_path=log_path,
-                record_base={**record_base, "group": "subtitled"},
-                audio_ext=audio_ext,
-                file_prefix="bilibili_sub_pending",
-                output_template="subtitled/bilibili/audios/%(id)s.%(ext)s",
-                subtitle_output_template="subtitled/bilibili/subs/%(id)s.%(language)s.%(ext)s",
-                extra_args=_sub_extra_args(sub_langs),
-                format_override=bili_fmt,
+        probed_cache_path = out_dir / "subtitle_probed_urls.txt"
+        manual_cache_path = out_dir / "subtitle_manual_urls.txt"
+        cache = load_subtitle_probe_cache(probed_cache_path, manual_cache_path)
+        flags = dict(cache)
+        cache_hits = sum(1 for u in pending if u in cache)
+        cache_manual = sum(1 for u in pending if cache.get(u))
+        print(
+            f"[bilibili] 字幕探测缓存: 全量 {len(cache)} 条"
+            f"（有字幕 {sum(1 for v in cache.values() if v)}），"
+            f"本批命中 {cache_hits}/{len(pending)}（有字幕 {cache_manual}）"
+            f" → {probed_cache_path.name} / {manual_cache_path.name}"
+        )
+
+        probe_batch_size = 50
+        batch_count = (len(pending) + probe_batch_size - 1) // probe_batch_size
+        print(f"[bilibili] 小批交错处理: 每批最多 {probe_batch_size} 条，共 {batch_count} 批")
+
+        for batch_index, start in enumerate(
+            range(0, len(pending), probe_batch_size), start=1
+        ):
+            batch = pending[start : start + probe_batch_size]
+            cached_urls = [u for u in batch if u in cache]
+            need_probe = [u for u in batch if u not in cache]
+            batch_flags: dict[str, bool] = {u: bool(cache[u]) for u in cached_urls}
+
+            if need_probe:
+                print(
+                    f"[bilibili] 第 {batch_index}/{batch_count} 批: "
+                    f"缓存命中 {len(cached_urls)}，探测 {len(need_probe)} 条手动字幕…"
+                )
+                probed = batch_probe_manual_subtitles(
+                    need_probe,
+                    cookies_path,
+                    batch_size=probe_batch_size,
+                    parallel=parallel,
+                    sub_langs=sub_langs,
+                )
+                added_probed, added_manual = append_subtitle_probe_cache(
+                    probed_cache_path, manual_cache_path, probed
+                )
+                cache.update(probed)
+                batch_flags.update(probed)
+                if added_probed or added_manual:
+                    print(
+                        f"  [subtitle-probe] 缓存追加: 已探测 +{added_probed}, "
+                        f"有字幕 +{added_manual}"
+                    )
+                failed_probe = len(need_probe) - len(probed)
+                if failed_probe:
+                    print(
+                        f"  [subtitle-probe] 本批探测未成功 {failed_probe} 条"
+                        f"（不写缓存，下次重试）"
+                    )
+            else:
+                print(
+                    f"[bilibili] 第 {batch_index}/{batch_count} 批: "
+                    f"全部命中缓存 {len(cached_urls)} 条，跳过探测"
+                )
+
+            flags.update(batch_flags)
+            batch_subtitled = [u for u in batch if batch_flags.get(u)]
+            batch_unsubtitled = [u for u in batch if not batch_flags.get(u)]
+            subtitled.update(batch_subtitled)
+            print(
+                f"[bilibili] 第 {batch_index}/{batch_count} 批字幕结果: "
+                f"有手动字幕 {len(batch_subtitled)} 条, "
+                f"无/未知 {len(batch_unsubtitled)} 条"
             )
-        if unsubtitled:
-            print(f"[bilibili] 下载无字幕组: {len(unsubtitled)} 条（仅音频）")
-            _run_group(
-                urls=unsubtitled,
-                parallel=parallel,
-                out_dir=out_dir,
-                archive_path=archive_path,
-                cookies_path=cookies_path,
-                audio=audio,
-                runtime=runtime,
-                log_path=log_path,
-                record_base={**record_base, "group": "unsubtitled"},
-                audio_ext=audio_ext,
-                file_prefix="bilibili_nosub_pending",
-                output_template="unsubtitled/bilibili/audios/%(id)s.%(ext)s",
-                format_override=bili_fmt,
-            )
+
+            if batch_subtitled:
+                print(
+                    f"[bilibili] 第 {batch_index}/{batch_count} 批下载有字幕组: "
+                    f"{len(batch_subtitled)} 条（音频+字幕）"
+                )
+                _run_group(
+                    urls=batch_subtitled,
+                    parallel=parallel,
+                    out_dir=out_dir,
+                    archive_path=archive_path,
+                    cookies_path=cookies_path,
+                    audio=audio,
+                    runtime=runtime,
+                    log_path=log_path,
+                    record_base={
+                        **record_base,
+                        "group": "subtitled",
+                        "batch": batch_index,
+                    },
+                    audio_ext=audio_ext,
+                    file_prefix=f"bilibili_sub_pending_{batch_index}",
+                    output_template="subtitled/bilibili/audios/%(id)s.%(ext)s",
+                    subtitle_output_template="subtitled/bilibili/subs/%(id)s.%(language)s.%(ext)s",
+                    extra_args=_sub_extra_args(sub_langs),
+                    format_override=bili_fmt,
+                )
+            if mode == "mixed" and batch_unsubtitled:
+                print(
+                    f"[bilibili] 第 {batch_index}/{batch_count} 批下载无字幕组: "
+                    f"{len(batch_unsubtitled)} 条（仅音频）"
+                )
+                _run_group(
+                    urls=batch_unsubtitled,
+                    parallel=parallel,
+                    out_dir=out_dir,
+                    archive_path=archive_path,
+                    cookies_path=cookies_path,
+                    audio=audio,
+                    runtime=runtime,
+                    log_path=log_path,
+                    record_base={
+                        **record_base,
+                        "group": "unsubtitled",
+                        "batch": batch_index,
+                    },
+                    audio_ext=audio_ext,
+                    file_prefix=f"bilibili_nosub_pending_{batch_index}",
+                    output_template="unsubtitled/bilibili/audios/%(id)s.%(ext)s",
+                    format_override=bili_fmt,
+                )
 
     after_files = list_audio_files(out_dir, audio_ext)
     new_files = sorted(after_files - before_files)

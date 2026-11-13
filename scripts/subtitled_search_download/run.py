@@ -124,9 +124,14 @@ class SubtitledPipeline:
     def make_hook(self):
         def hook(info: dict, watch_url: str, video: dict) -> str:
             title = video.get("title") or watch_url
-            if not has_manual_subtitles(info):
+            if not has_manual_subtitles(info, self.sub_langs):
                 self.stats["no_manual_subs"] += 1
-                logger.info("  无手动字幕，跳过: %s", title)
+                lang_hint = (self.sub_langs or "").strip() or "all"
+                logger.info(
+                    "  无匹配手动字幕（要求 langs=%s），跳过: %s",
+                    lang_hint,
+                    title,
+                )
                 return "skip"
 
             vid = extract_youtube_video_id(watch_url)
@@ -137,7 +142,11 @@ class SubtitledPipeline:
                 self._write_metadata(video, has_manual_subs=True)
                 return "add"
 
-            logger.info("  发现手动字幕，开始下载: %s", title)
+            logger.info(
+                "  发现匹配手动字幕（langs=%s），开始下载: %s",
+                (self.sub_langs or "").strip() or "all",
+                title,
+            )
             ok = download_youtube_manual_subs(
                 watch_url,
                 out_dir=self.out_dir,
@@ -272,6 +281,7 @@ def main():
     logger.info("YouTube 手动字幕 · 搜索+下载")
     logger.info("输入: %s | YouTube 条目: %d", input_file, len(yt_entries))
     logger.info("输出: %s", out_dir)
+    logger.info("字幕语种要求: %s", (sub_langs or "").strip() or "all")
     logger.info("Checkpoint: %s", cp_dir)
     logger.info("=" * 60)
 

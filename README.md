@@ -28,7 +28,10 @@ video_metadata_crawler/
 ├── input/
 │   ├── example_input.txt   # 输入文件格式说明与示例
 │   └── *.txt               # 实际输入文件
+├── docs/
+│   └── pt_dialect.md       # 巴西葡语口音区划分
 ├── scripts/
+│   ├── youtube_dialect.py  # 按口音区检索 YouTube，并导出视频元数据
 │   ├── crawl_all.py        # 主入口，调度 Bilibili/YouTube 爬虫
 │   ├── bilibili_crawler.py # Bilibili API 爬虫
 │   ├── youtube_crawler.py  # YouTube yt-dlp 爬虫
@@ -152,6 +155,69 @@ checkpoint:
 | 平台 | bilibili / youtube |
 | 发布时间 | YYYY-MM-DD HH:MM:SS |
 | 播放量 | 播放/观看次数 |
+
+## 巴西葡语方言检索
+
+脚本 `scripts/youtube_dialect.py` 按 `docs/pt_dialect.md` 的口音区搜索 YouTube，先发现频道和视频，再拉取与 `run.sh` 相同的视频元数据。默认地区是东南 **Sudeste**（SP、RJ、MG、ES），不限制发布日期。
+
+检索词覆盖街采、地方议会、本地谈话，以及方言标记词（如 `uai sô`、`gírias cariocas`、`sotaque caipira`）和内陆城市。每个检索词先取 100 条，丢掉关键词匹配度低的结果；整页命中率 ≥ 0.45，或本页最后 20 条命中率 ≥ 0.30，则继续翻页，每种排序最多 500 条。视频搜索默认按相关性和上传日期各跑一遍。
+
+### 运行
+
+在仓库根目录执行。需要已安装的 `yt-dlp`、Node.js，以及 `config/youtube_cookies.txt`（没有该文件时仍会跑，但更容易被 YouTube 限流）。
+
+```bash
+python scripts/youtube_dialect.py --region Sudeste --scheme geo5 --output results/dialect_Sudeste_channels.csv --metadata-out results/dialect_Sudeste_metadata.xlsx --video-urls-out results/dialect_Sudeste_video_urls.txt --channels-tsv-out results/dialect_Sudeste_channels.tsv
+```
+
+列出可用地区后退出：
+
+```bash
+python scripts/youtube_dialect.py --list-regions
+```
+
+其他地区把 `--region` 换成 `Norte`、`Nordeste`、`Sul`、`Centro-Oeste`，或中文「东南」，或州码（`--states SP RJ`）。`--scheme accent7` 时检索范围按 7 类口音区，但元数据表里的「五类地区」列始终按 5 类行政大区填写。
+
+不要另加 `--max-per-query 40` 或 `--days-back 90`，否则会盖掉当前默认（起始 100 条、不限日期）。
+
+### 输出
+
+| 文件 | 内容 |
+|------|------|
+| `results/dialect_<region>_metadata.xlsx` | 视频元数据。列为上文 Excel 的 11 列，末尾另加 **州**、**五类地区** |
+| `results/dialect_<region>_metadata.partial.jsonl` | 元数据检查点。中断后重跑会跳过其中已有 URL |
+| `results/dialect_<region>_channels.csv` | 频道汇总，含命中检索词和州 |
+| `results/dialect_<region>_video_urls.txt` | 进入 Excel 的视频 URL |
+| `results/dialect_<region>_channels.tsv` | `crawl_all` 可用的频道列表：`name<TAB>youtube_channel<TAB>url` |
+
+**州** 来自命中该视频的检索词（多个州写成 `ES+SP`）。**五类地区** 由州映射到 Norte / Nordeste / Sudeste / Sul / Centro-Oeste。
+
+这一步只拉元数据，不下载视频。日志里若出现 `Video unavailable` 或 `No video formats found`，通常是 YouTube 没有给出可播放格式，标题、时长和播放量仍会写入。
+
+### 常用参数
+
+| 参数 | 默认 | 说明 |
+|------|------|------|
+| `--region` | `Sudeste` | 地区名、中文别名或单个州码 |
+| `--scheme` | `geo5` | `geo5` 为 5 类行政大区，`accent7` 为 7 类口音区 |
+| `--max-per-query` | `100` | 每种排序的起始页大小 |
+| `--max-results` | `500` | 每种排序的条数上限；`0` 表示只按匹配率停（内部上限 2000） |
+| `--hit-rate` / `--tail-rate` | `0.45` / `0.30` | 整页或页尾命中率达到该值则继续翻页 |
+| `--min-keyword-ratio` | `0.5` | 标题或频道名至少覆盖检索词实词的比例 |
+| `--search-sorts` | `relevance,date` | 还可加 `views`；按播放量更容易召回全国热门 |
+| `--days-back` | `0` | 发布日期窗口（天）；`0` 为不限制 |
+| `--min-duration` / `--max-duration` | `20` / `14400` | 时长过滤（秒）。搜索结果里没有时长时，等完整元数据返回后再滤一次 |
+| `--skip-metadata` | 关 | 只发现 URL，不拉时长、播放量和发布时间 |
+| `--cookies` | `config/youtube_cookies.txt` | 文件存在时自动使用 |
+| `--proxy` | 空 | 例如 `http://127.0.0.1:7993`。未传时 yt-dlp 仍会读取环境变量里的代理 |
+
+### 下载音频
+
+元数据 Excel 可直接交给 `download.sh`：
+
+```bash
+./download.sh results/dialect_Sudeste_metadata.xlsx --out /e/datasets/pt_dialect --task-name sudeste --cookies-youtube config/youtube_cookies.txt --subtitle-mode audio_only -j 4
+```
 
 ## Cookies 配置
 

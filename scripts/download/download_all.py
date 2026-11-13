@@ -198,6 +198,10 @@ def main():
 
     print(f"完成。metadata → {metadata_path}")
     print("已下载条目写入 downloaded.txt；下次运行会先按该文件预跳过，再由 yt-dlp archive 兜底。")
+    print(
+        "字幕探测结果写入 subtitle_probed_urls.txt / subtitle_manual_urls.txt；"
+        "下次运行会跳过已探测 URL。"
+    )
 
 
 if __name__ == "__main__":
